@@ -17,7 +17,8 @@ Key scripts:
 - `scenes/ego_approach_truck.py`: builds the ego-approaches-truck scene, with optional cargo falling from the truck.
 - `pipeline/qwen_vl_image_analyze.py`: general Qwen/Ollama image analysis utility.
 - `pipeline/step1_qwen_risk_annotation.py`: first decision-tree pipeline step. It labels visible or inferred L1 risk weaknesses from CARLA frames and writes JSONL.
-- `pipeline/run_normal_scene_to_qwen.py`: runs the minimal end-to-end pipeline: normal CARLA scene -> saved images -> Qwen L1 risk labels.
+- `pipeline/l0_l1_qwen_subagent.py`: Qwen subagent that writes one L0 scene snapshot file and one L1 risk prediction file.
+- `pipeline/run_normal_scene_to_qwen.py`: runs the minimal end-to-end pipeline: normal CARLA scene -> saved images -> Qwen L0/L1 subagent.
 
 ## Typical Flow
 
@@ -37,12 +38,17 @@ python carla_smoke/pipeline/run_normal_scene_to_qwen.py \
   --vehicles 30 \
   --lead-distance 14 \
   --lead-speed-difference 35 \
-  --qwen-limit 3 \
+  --qwen-select middle \
   --qwen-timeout 300 \
   --clean-output
 ```
 
-This writes images to `carla_smoke/outputs/normal_driving/` and Qwen annotations to `carla_smoke/outputs/risk_labels/normal_driving_step1_qwen.jsonl`. The explicit lead vehicle keeps another car visible near the ego vehicle instead of relying only on random traffic.
+This writes images to `carla_smoke/outputs/normal_driving/` and Qwen subagent outputs to `carla_smoke/outputs/agent_pipeline/l0_l1/`. The explicit lead vehicle keeps another car visible near the ego vehicle instead of relying only on random traffic.
+
+The L0/L1 subagent writes two main files:
+
+- `L0_state_snapshot.json`: the current scene root node, including ego state, road state, visible objects, and a compact scene sentence.
+- `L1_risk_predictions.json`: exactly five likely physical risk weaknesses, ranked from 1 to 5.
 
 Generate only the normal-driving images:
 
@@ -68,20 +74,20 @@ python carla_smoke/scenes/ego_approach_truck.py \
 Run decision-tree step 1 risk annotation:
 
 ```bash
-python carla_smoke/pipeline/step1_qwen_risk_annotation.py \
+python carla_smoke/pipeline/l0_l1_qwen_subagent.py \
   carla_smoke/outputs/approach_truck \
-  --limit 5 \
-  --output carla_smoke/outputs/risk_labels/step1_qwen_risk_annotations.jsonl
+  --select middle \
+  --output-dir carla_smoke/outputs/agent_pipeline/l0_l1
 ```
 
-## Step 1 Output
+## L0/L1 Output
 
-Each JSONL row contains one frame:
+The L0 file contains the scene root node:
 
-- `image`: absolute image path.
-- `model`: Ollama model name, default `qwen3.5:0.8b`.
-- `step`: fixed label for this pipeline stage.
-- `parsed`: parsed JSON if the model followed the format.
-- `raw_response`: original model text for debugging.
+- `level`: fixed as `L0`.
+- `name`: `场景根节点`.
+- `description`: `当前时刻的场景结构化快照`.
+- `ego`, `road`, `objects`: structured state fields.
+- `scene_text`: one compressed sentence, e.g. ego speed, front vehicle distance, road state, and visible risk objects.
 
-The expected L1 labels include cargo instability, brake-light failure, cyclist proximity, wet road, A-pillar blind spot, large-vehicle occlusion, short following distance, and limited avoidance space.
+The L1 file contains five ranked physical risk predictions. Expected labels include cargo instability, brake-light failure, cyclist proximity, wet road, A-pillar blind spot, large-vehicle occlusion, short following distance, and limited avoidance space.
