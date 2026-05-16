@@ -34,15 +34,15 @@ def import_carla(carla_root):
         return carla
 
 
-def cleanup_previous(world):
-    removed = 0
+def cleanup_previous(carla, client, world):
+    actor_ids = []
     for actor in world.get_actors():
         role_name = actor.attributes.get("role_name", "")
         if role_name.startswith("normal_"):
-            actor.destroy()
-            removed += 1
-    if removed:
-        print(f"Destroyed {removed} previous normal-scene actors.")
+            actor_ids.append(actor.id)
+    if actor_ids:
+        client.apply_batch_sync([carla.command.DestroyActor(actor_id) for actor_id in actor_ids], True)
+        print(f"Destroyed {len(actor_ids)} previous normal-scene actors.")
 
 
 def choose_vehicle_blueprint(blueprints, rng):
@@ -75,6 +75,48 @@ def spawn_ego(carla, world, blueprints, spawn_points, rng):
         if ego is not None:
             return ego
     raise RuntimeError("Failed to spawn ego vehicle.")
+
+
+def transform_ahead(carla, world, base_transform, distance):
+    waypoint = world.get_map().get_waypoint(
+        base_transform.location,
+        project_to_road=True,
+        lane_type=carla.LaneType.Driving,
+    )
+    next_waypoints = waypoint.next(distance)
+    if next_waypoints:
+        transform = next_waypoints[0].transform
+        transform.location.z += 0.6
+        return transform
+
+    forward = base_transform.get_forward_vector()
+    return carla.Transform(
+        base_transform.location + carla.Location(x=forward.x * distance, y=forward.y * distance, z=0.6),
+        base_transform.rotation,
+    )
+
+
+def spawn_lead_vehicle(carla, world, traffic_manager, blueprints, ego, distance, speed_difference, rng):
+    lead_bp = choose_vehicle_blueprint(blueprints, rng)
+    if lead_bp.has_attribute("role_name"):
+        lead_bp.set_attribute("role_name", "normal_lead_vehicle")
+    if lead_bp.has_attribute("color"):
+        lead_bp.set_attribute("color", "255,0,0")
+
+    ego_transform = ego.get_transform()
+    for candidate_distance in [distance, distance + 4.0, distance + 8.0, distance + 12.0]:
+        lead_transform = transform_ahead(carla, world, ego_transform, candidate_distance)
+        lead = world.try_spawn_actor(lead_bp, lead_transform)
+        if lead is None:
+            continue
+        lead.set_autopilot(True, traffic_manager.get_port())
+        traffic_manager.vehicle_percentage_speed_difference(lead, speed_difference)
+        actual = ego.get_location().distance(lead.get_location())
+        print(f"Lead vehicle spawned at requested {candidate_distance:.1f} m, actual {actual:.2f} m.")
+        return lead
+
+    print("WARNING: failed to spawn explicit lead vehicle; continuing with random traffic only.")
+    return None
 
 
 def spawn_npc_vehicles(carla, client, world, traffic_manager, blueprints, spawn_points, ego, count, rng):
@@ -137,6 +179,13 @@ def main():
     parser.add_argument("--frames", type=int, default=160)
     parser.add_argument("--save-every", type=int, default=5)
     parser.add_argument("--vehicles", type=int, default=30)
+    parser.add_argument("--lead-distance", type=float, default=14.0, help="Distance in meters for an explicit vehicle ahead of ego.")
+    parser.add_argument(
+        "--lead-speed-difference",
+        type=float,
+        default=35.0,
+        help="Traffic Manager speed difference for the lead vehicle; positive means slower than the speed limit.",
+    )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
@@ -166,6 +215,8 @@ def main():
 
     original_settings = world.get_settings()
     actors = []
+    actor_ids = []
+    camera = None
     image_queue = queue.Queue()
     log_rows = []
 
@@ -176,7 +227,7 @@ def main():
         world.apply_settings(settings)
         traffic_manager.set_synchronous_mode(True)
 
-        cleanup_previous(world)
+        cleanup_previous(carla, client, world)
         world.tick()
 
         blueprints = world.get_blueprint_library()
@@ -185,15 +236,32 @@ def main():
 
         ego = spawn_ego(carla, world, blueprints, spawn_points, rng)
         actors.append(ego)
+        actor_ids.append(ego.id)
         ego.set_autopilot(True, traffic_manager.get_port())
         traffic_manager.vehicle_percentage_speed_difference(ego, -5.0)
 
+        lead = spawn_lead_vehicle(
+            carla,
+            world,
+            traffic_manager,
+            blueprints,
+            ego,
+            args.lead_distance,
+            args.lead_speed_difference,
+            rng,
+        )
+        if lead is not None:
+            actors.append(lead)
+            actor_ids.append(lead.id)
+
         npcs = spawn_npc_vehicles(carla, client, world, traffic_manager, blueprints, spawn_points, ego, args.vehicles, rng)
         actors.extend(npcs)
-        print(f"Spawned ego and {len(npcs)} NPC vehicles.")
+        actor_ids.extend(actor.id for actor in npcs)
+        print(f"Spawned ego, {1 if lead is not None else 0} lead vehicle, and {len(npcs)} NPC vehicles.")
 
         camera = attach_front_camera(carla, world, ego, blueprints, image_queue, args.width, args.height, args.fov)
         actors.append(camera)
+        actor_ids.append(camera.id)
 
         spectator = world.get_spectator()
         saved = 0
@@ -235,12 +303,17 @@ def main():
         return 0
 
     finally:
-        for actor in reversed(actors):
+        if camera is not None:
             try:
-                if actor.is_alive:
-                    actor.destroy()
-            except RuntimeError:
+                camera.stop()
+            except Exception:
                 pass
+        if actor_ids:
+            try:
+                destroy_commands = [carla.command.DestroyActor(actor_id) for actor_id in reversed(dict.fromkeys(actor_ids))]
+                client.apply_batch_sync(destroy_commands, True)
+            except Exception as exc:
+                print(f"WARNING: actor cleanup failed: {exc}", file=sys.stderr)
         traffic_manager.set_synchronous_mode(False)
         world.apply_settings(original_settings)
         time.sleep(0.5)

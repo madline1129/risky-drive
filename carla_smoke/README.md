@@ -35,11 +35,13 @@ python carla_smoke/pipeline/run_normal_scene_to_qwen.py \
   --frames 160 \
   --save-every 5 \
   --vehicles 30 \
+  --lead-distance 14 \
+  --lead-speed-difference 35 \
   --qwen-limit 8 \
   --clean-output
 ```
 
-This writes images to `carla_smoke/outputs/normal_driving/` and Qwen annotations to `carla_smoke/outputs/risk_labels/normal_driving_step1_qwen.jsonl`.
+This writes images to `carla_smoke/outputs/normal_driving/` and Qwen annotations to `carla_smoke/outputs/risk_labels/normal_driving_step1_qwen.jsonl`. The explicit lead vehicle keeps another car visible near the ego vehicle instead of relying only on random traffic.
 
 Generate only the normal-driving images:
 
@@ -48,6 +50,7 @@ python carla_smoke/scenes/normal_driving_scene.py \
   --port 2000 \
   --output-dir carla_smoke/outputs/normal_driving \
   --vehicles 30 \
+  --lead-distance 14 \
   --clean-output
 ```
 

@@ -36,6 +36,8 @@ def main():
     parser.add_argument("--frames", type=int, default=160)
     parser.add_argument("--save-every", type=int, default=5)
     parser.add_argument("--vehicles", type=int, default=30)
+    parser.add_argument("--lead-distance", type=float, default=14.0)
+    parser.add_argument("--lead-speed-difference", type=float, default=35.0)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--image-dir", default=default_image_dir)
     parser.add_argument("--label-output", default=default_label_path)
@@ -70,6 +72,10 @@ def main():
             str(args.save_every),
             "--vehicles",
             str(args.vehicles),
+            "--lead-distance",
+            str(args.lead_distance),
+            "--lead-speed-difference",
+            str(args.lead_speed_difference),
             "--seed",
             str(args.seed),
             "--output-dir",
