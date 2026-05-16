@@ -1,0 +1,2 @@
+bash /mnt/data2/congfeng/carla915/CarlaUE4.sh -RenderOffScreen -nosound -carla-port=2000
+
