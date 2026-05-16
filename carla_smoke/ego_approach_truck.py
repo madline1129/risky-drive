@@ -43,6 +43,17 @@ def first_blueprint(blueprints, patterns):
     raise RuntimeError(f"No blueprint found for patterns: {patterns}")
 
 
+def select_cargo_blueprint(blueprints):
+    static_bps = [bp for bp in list(blueprints) if bp.id.startswith("static.prop")]
+    for keyword in ["barrier", "construction", "warning", "cone", "box", "garbage"]:
+        matches = [bp for bp in static_bps if keyword in bp.id.lower()]
+        if matches:
+            return matches[0]
+    if static_bps:
+        return static_bps[0]
+    raise RuntimeError("No static prop blueprint found for cargo.")
+
+
 def cleanup_previous(world):
     removed = 0
     for actor in world.get_actors():
@@ -100,11 +111,80 @@ def spawn_truck(carla, world, blueprint, ego_transform, requested_distance):
     raise RuntimeError("Failed to spawn stopped truck ahead of ego.")
 
 
+def transform_from_local(carla, base_transform, x, y, z, yaw_offset=0.0):
+    forward = base_transform.get_forward_vector()
+    right = base_transform.get_right_vector()
+    location = base_transform.location + carla.Location(
+        x=forward.x * x + right.x * y,
+        y=forward.y * x + right.y * y,
+        z=z,
+    )
+    rotation = carla.Rotation(
+        pitch=base_transform.rotation.pitch,
+        yaw=base_transform.rotation.yaw + yaw_offset,
+        roll=base_transform.rotation.roll,
+    )
+    return carla.Transform(location, rotation)
+
+
+def spawn_cargo(carla, world, cargo_bp, truck_transform, count):
+    cargo = []
+    lateral_offsets = [-0.8, 0.0, 0.8, -0.4, 0.4, -1.2, 1.2]
+    if cargo_bp.has_attribute("role_name"):
+        cargo_bp.set_attribute("role_name", "approach_cargo")
+
+    for idx in range(count):
+        transform = transform_from_local(
+            carla,
+            truck_transform,
+            x=-3.2 + 0.2 * idx,
+            y=lateral_offsets[idx % len(lateral_offsets)],
+            z=2.4 + 0.05 * idx,
+            yaw_offset=90.0,
+        )
+        actor = world.try_spawn_actor(cargo_bp, transform)
+        if actor is None:
+            continue
+        try:
+            actor.set_simulate_physics(False)
+            actor.set_enable_gravity(False)
+        except RuntimeError:
+            pass
+        cargo.append((actor, -3.2 + 0.2 * idx, lateral_offsets[idx % len(lateral_offsets)], 2.4 + 0.05 * idx))
+
+    if not cargo:
+        print(f"WARNING: failed to spawn cargo with blueprint {cargo_bp.id}")
+    return cargo
+
+
+def scripted_cargo_drop(carla, truck_transform, cargo, drop_frame, frame_idx, back_speed):
+    elapsed = (frame_idx - drop_frame) * 0.05
+    if elapsed < 0:
+        return
+
+    for idx, (actor, x0, y0, z0) in enumerate(cargo):
+        x = x0 - (back_speed + idx * 0.25) * elapsed
+        y = y0 + ((idx % 3) - 1) * 0.35 * elapsed
+        z = max(0.25, z0 - 0.5 * 9.8 * elapsed * elapsed)
+        transform = transform_from_local(
+            carla,
+            truck_transform,
+            x=x,
+            y=y,
+            z=z,
+            yaw_offset=90.0 + 120.0 * elapsed,
+        )
+        try:
+            actor.set_transform(transform)
+        except RuntimeError:
+            pass
+
+
 def save_distance_log(path, rows):
     with open(path, "w", encoding="utf-8") as f:
-        f.write("frame,distance_m,ego_speed_mps\n")
-        for frame, distance, speed in rows:
-            f.write(f"{frame},{distance:.3f},{speed:.3f}\n")
+        f.write("frame,distance_m,ego_speed_mps,cargo_dropped\n")
+        for frame, distance, speed, cargo_dropped in rows:
+            f.write(f"{frame},{distance:.3f},{speed:.3f},{int(cargo_dropped)}\n")
 
 
 def main():
@@ -119,6 +199,10 @@ def main():
     parser.add_argument("--target-speed", type=float, default=4.0, help="Approximate ego speed in m/s.")
     parser.add_argument("--frames", type=int, default=160)
     parser.add_argument("--save-every", type=int, default=5)
+    parser.add_argument("--cargo-count", type=int, default=6)
+    parser.add_argument("--drop-frame", type=int, default=45)
+    parser.add_argument("--cargo-back-speed", type=float, default=8.0, help="Cargo motion speed toward ego in m/s.")
+    parser.add_argument("--no-cargo-drop", action="store_true")
     args = parser.parse_args()
 
     carla = import_carla(args.carla_root)
@@ -146,6 +230,7 @@ def main():
         blueprints = world.get_blueprint_library()
         ego_bp = first_blueprint(blueprints, ["vehicle.lincoln.*", "vehicle.tesla.model3", "vehicle.*"])
         truck_bp = first_blueprint(blueprints, ["vehicle.carlamotors.carlacola", "vehicle.carlamotors.*", "vehicle.*"])
+        cargo_bp = select_cargo_blueprint(blueprints)
 
         ego, ego_transform = spawn_ego(carla, world, ego_bp)
         actors.append(ego)
@@ -155,6 +240,12 @@ def main():
         actors.append(truck)
         truck.set_autopilot(False)
         truck.apply_control(carla.VehicleControl(hand_brake=True))
+
+        cargo = []
+        if not args.no_cargo_drop:
+            cargo = spawn_cargo(carla, world, cargo_bp, truck_transform, args.cargo_count)
+            actors.extend(actor for actor, _, _, _ in cargo)
+            print(f"Cargo blueprint: {cargo_bp.id}; spawned cargo actors: {len(cargo)}")
 
         camera_bp = blueprints.find("sensor.camera.rgb")
         camera_bp.set_attribute("image_size_x", "1280")
@@ -193,13 +284,17 @@ def main():
                 control = carla.VehicleControl(throttle=0.0, brake=0.08)
             ego.apply_control(control)
 
+            cargo_dropped = bool(cargo) and frame_idx >= args.drop_frame
+            if cargo_dropped:
+                scripted_cargo_drop(carla, truck_transform, cargo, args.drop_frame, frame_idx, args.cargo_back_speed)
+
             world.tick()
             image = image_queue.get(timeout=5.0)
 
             velocity = ego.get_velocity()
             speed = (velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z) ** 0.5
             distance = ego.get_location().distance(truck.get_location())
-            distance_rows.append((frame_idx, distance, speed))
+            distance_rows.append((frame_idx, distance, speed, cargo_dropped))
 
             if frame_idx % args.save_every == 0:
                 image.save_to_disk(os.path.join(args.output_dir, f"rgb_{frame_idx:04d}.png"))
