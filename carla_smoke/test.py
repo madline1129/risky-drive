@@ -33,25 +33,25 @@ def add_carla_python_api(carla_root):
 
 def main():
     parser = argparse.ArgumentParser(description="Connect to CARLA and print basic world info.")
-    parser.add_argument("--carla-root", default="/home/user/fc/CARLA_0.9.15")
+    parser.add_argument("--carla-root", default="/mnt/data2/congfeng/carla915")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2000)
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--town", default=None, help="Optional map to load, e.g. Town01.")
     args = parser.parse_args()
 
+    '''
     added_paths = add_carla_python_api(args.carla_root)
     if not added_paths:
         print(f"ERROR: no CARLA PythonAPI files found under {args.carla_root}")
         return 1
+    '''
 
     try:
         import carla
     except ImportError as exc:
-        print("ERROR: failed to import carla after adding PythonAPI paths.")
-        print(f"Added paths: {added_paths}")
-        print(exc)
-        return 1
+        add_carla_python_api(args.carla_root)
+        import carla
 
     client = carla.Client(args.host, args.port)
     client.set_timeout(args.timeout)
