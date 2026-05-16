@@ -156,12 +156,12 @@ def transform_from_local(carla, base_transform, x, y, z, yaw_offset=0.0):
     return carla.Transform(loc, rot)
 
 
-def spawn_cargo_props(carla, world, cargo_bp, truck_transform, actors, count):
+def spawn_cargo_props(carla, world, cargo_bp, truck_transform, actors, count, cargo_start_x):
     props = []
     lateral_offsets = [-1.2, -0.4, 0.4, 1.2, 0.0, -0.8, 0.8]
     for idx in range(count):
         y = lateral_offsets[idx % len(lateral_offsets)]
-        x = -1.2 + 0.25 * idx
+        x = cargo_start_x + 0.18 * idx
         transform = transform_from_local(carla, truck_transform, x=x, y=y, z=2.4 + 0.08 * idx, yaw_offset=90.0)
         prop = world.try_spawn_actor(cargo_bp, transform)
         if prop is None:
@@ -187,8 +187,8 @@ def release_cargo(carla, truck_transform, cargo_props):
             prop.set_simulate_physics(True)
             prop.add_impulse(
                 carla.Vector3D(
-                    x=forward.x * (250.0 + 30.0 * idx) + right.x * ((idx % 3) - 1) * 80.0,
-                    y=forward.y * (250.0 + 30.0 * idx) + right.y * ((idx % 3) - 1) * 80.0,
+                    x=-forward.x * (320.0 + 35.0 * idx) + right.x * ((idx % 3) - 1) * 80.0,
+                    y=-forward.y * (320.0 + 35.0 * idx) + right.y * ((idx % 3) - 1) * 80.0,
                     z=80.0,
                 )
             )
@@ -197,16 +197,16 @@ def release_cargo(carla, truck_transform, cargo_props):
             pass
 
 
-def scripted_drop(carla, truck_transform, cargo_props, release_frame, frame_idx):
+def scripted_drop(carla, truck_transform, cargo_props, release_frame, frame_idx, debris_back_speed):
     """Fallback visual motion if the selected prop has weak physics support."""
     t = (frame_idx - release_frame) * 0.05
     if t < 0:
         return
     for idx, (prop, x0, y0, z0) in enumerate(cargo_props):
-        forward_speed = 8.0 + idx * 0.4
+        backward_speed = debris_back_speed + idx * 0.35
         side_speed = ((idx % 3) - 1) * 0.8
         drop = 0.5 * 9.8 * t * t
-        x = x0 + forward_speed * t
+        x = x0 - backward_speed * t
         y = y0 + side_speed * t
         z = max(0.25, z0 - drop)
         transform = transform_from_local(carla, truck_transform, x=x, y=y, z=z, yaw_offset=90.0 + 140.0 * t)
@@ -231,6 +231,8 @@ def main():
     parser.add_argument("--truck-distance", type=float, default=22.0)
     parser.add_argument("--ego-throttle", type=float, default=0.45)
     parser.add_argument("--brake-frame-offset", type=int, default=45)
+    parser.add_argument("--cargo-start-x", type=float, default=-3.2, help="Cargo initial longitudinal offset from truck center; negative is behind truck.")
+    parser.add_argument("--debris-back-speed", type=float, default=10.0, help="Scripted debris speed toward ego, in m/s.")
     parser.add_argument("--scripted-drop", action="store_true", help="Animate debris manually after release.")
     args = parser.parse_args()
 
@@ -277,7 +279,17 @@ def main():
             args.truck_distance + 20.0,
         ]
         truck, truck_transform = spawn_truck(carla, world, blueprints, ego_transform, actors, truck_distances)
-        cargo_props = spawn_cargo_props(carla, world, cargo_bp, truck_transform, actors, args.cargo_count)
+        actual_distance = ego_transform.location.distance(truck_transform.location)
+        print(f"Actual ego-to-truck spawn distance: {actual_distance:.2f} m")
+        cargo_props = spawn_cargo_props(
+            carla,
+            world,
+            cargo_bp,
+            truck_transform,
+            actors,
+            args.cargo_count,
+            args.cargo_start_x,
+        )
 
         camera_bp = blueprints.find("sensor.camera.rgb")
         camera_bp.set_attribute("image_size_x", "1280")
@@ -326,7 +338,14 @@ def main():
                 released = True
 
             if released and args.scripted_drop:
-                scripted_drop(carla, truck_transform, cargo_props, args.release_frame, frame_idx)
+                scripted_drop(
+                    carla,
+                    truck_transform,
+                    cargo_props,
+                    args.release_frame,
+                    frame_idx,
+                    args.debris_back_speed,
+                )
 
             world.tick()
             image = image_queue.get(timeout=5.0)
