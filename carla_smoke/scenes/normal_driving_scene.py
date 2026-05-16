@@ -4,6 +4,7 @@
 import argparse
 import csv
 import glob
+import json
 import os
 import queue
 import random
@@ -180,6 +181,198 @@ def save_ego_log(path, rows):
         writer.writerows(rows)
 
 
+def vector_length(vector):
+    return (vector.x * vector.x + vector.y * vector.y + vector.z * vector.z) ** 0.5
+
+
+def location_dict(location):
+    return {"x": round(location.x, 3), "y": round(location.y, 3), "z": round(location.z, 3)}
+
+
+def rotation_dict(rotation):
+    return {
+        "pitch": round(rotation.pitch, 3),
+        "yaw": round(rotation.yaw, 3),
+        "roll": round(rotation.roll, 3),
+    }
+
+
+def waypoint_dict(waypoint):
+    if waypoint is None:
+        return {}
+    return {
+        "road_id": waypoint.road_id,
+        "section_id": waypoint.section_id,
+        "lane_id": waypoint.lane_id,
+        "lane_type": str(waypoint.lane_type),
+        "is_junction": bool(waypoint.is_junction),
+        "junction_id": waypoint.get_junction().id if waypoint.is_junction and waypoint.get_junction() else None,
+    }
+
+
+def classify_relative_position(ego_transform, actor_location):
+    ego_location = ego_transform.location
+    forward = ego_transform.get_forward_vector()
+    right = ego_transform.get_right_vector()
+    dx = actor_location.x - ego_location.x
+    dy = actor_location.y - ego_location.y
+    dz = actor_location.z - ego_location.z
+    longitudinal = dx * forward.x + dy * forward.y + dz * forward.z
+    lateral = dx * right.x + dy * right.y + dz * right.z
+
+    if longitudinal >= 0 and abs(lateral) < 2.8:
+        label = "front"
+    elif longitudinal < 0 and abs(lateral) < 2.8:
+        label = "rear"
+    elif longitudinal >= 0 and lateral >= 2.8:
+        label = "front-right"
+    elif longitudinal >= 0 and lateral <= -2.8:
+        label = "front-left"
+    elif lateral >= 0:
+        label = "right"
+    else:
+        label = "left"
+    return label, longitudinal, lateral
+
+
+def actor_kind(actor):
+    if actor.type_id.startswith("vehicle."):
+        return "vehicle"
+    if actor.type_id.startswith("walker."):
+        return "pedestrian"
+    return "other"
+
+
+def weather_dict(weather):
+    return {
+        "cloudiness": round(weather.cloudiness, 3),
+        "precipitation": round(weather.precipitation, 3),
+        "precipitation_deposits": round(weather.precipitation_deposits, 3),
+        "wind_intensity": round(weather.wind_intensity, 3),
+        "fog_density": round(weather.fog_density, 3),
+        "wetness": round(weather.wetness, 3),
+        "sun_altitude_angle": round(weather.sun_altitude_angle, 3),
+    }
+
+
+def build_scene_snapshot(carla, world, ego, frame_idx, image_file, radius):
+    ego_transform = ego.get_transform()
+    ego_location = ego_transform.location
+    ego_velocity = ego.get_velocity()
+    ego_speed_mps = vector_length(ego_velocity)
+    carla_map = world.get_map()
+    ego_waypoint = carla_map.get_waypoint(
+        ego_location,
+        project_to_road=True,
+        lane_type=carla.LaneType.Driving,
+    )
+
+    nearby_actors = []
+    candidates = list(world.get_actors().filter("vehicle.*")) + list(world.get_actors().filter("walker.pedestrian.*"))
+    for actor in candidates:
+        if actor.id == ego.id:
+            continue
+        actor_location = actor.get_location()
+        distance = ego_location.distance(actor_location)
+        if distance > radius:
+            continue
+
+        actor_transform = actor.get_transform()
+        actor_velocity = actor.get_velocity()
+        actor_waypoint = carla_map.get_waypoint(
+            actor_location,
+            project_to_road=True,
+            lane_type=carla.LaneType.Driving,
+        )
+        relative_position, longitudinal_m, lateral_m = classify_relative_position(ego_transform, actor_location)
+        same_lane = (
+            bool(actor_waypoint and ego_waypoint)
+            and actor_waypoint.road_id == ego_waypoint.road_id
+            and actor_waypoint.lane_id == ego_waypoint.lane_id
+        )
+
+        nearby_actors.append(
+            {
+                "id": actor.id,
+                "type_id": actor.type_id,
+                "kind": actor_kind(actor),
+                "role_name": actor.attributes.get("role_name", ""),
+                "distance_m": round(distance, 3),
+                "relative_position": relative_position,
+                "relative_longitudinal_m": round(longitudinal_m, 3),
+                "relative_lateral_m": round(lateral_m, 3),
+                "speed_mps": round(vector_length(actor_velocity), 3),
+                "speed_kmh": round(vector_length(actor_velocity) * 3.6, 3),
+                "location": location_dict(actor_location),
+                "rotation": rotation_dict(actor_transform.rotation),
+                "road": waypoint_dict(actor_waypoint),
+                "same_lane_as_ego": same_lane,
+            }
+        )
+
+    nearby_actors.sort(key=lambda item: item["distance_m"])
+    front_actors = [
+        actor
+        for actor in nearby_actors
+        if actor["relative_longitudinal_m"] >= 0 and abs(actor["relative_lateral_m"]) < 4.0
+    ]
+    front_actors.sort(key=lambda item: item["relative_longitudinal_m"])
+
+    traffic_light_state = "unknown"
+    try:
+        traffic_light_state = str(ego.get_traffic_light_state())
+    except RuntimeError:
+        pass
+
+    return {
+        "level": "L0",
+        "name": "场景根节点",
+        "description": "当前时刻的场景结构化快照",
+        "source": {
+            "sensor": "carla_api",
+            "image_file": image_file,
+            "frame": frame_idx,
+            "map": world.get_map().name,
+        },
+        "ego": {
+            "id": ego.id,
+            "type_id": ego.type_id,
+            "speed_mps": round(ego_speed_mps, 3),
+            "speed_kmh": round(ego_speed_mps * 3.6, 3),
+            "location": location_dict(ego_location),
+            "rotation": rotation_dict(ego_transform.rotation),
+            "road": waypoint_dict(ego_waypoint),
+            "traffic_light_state": traffic_light_state,
+        },
+        "road": {
+            "map": world.get_map().name,
+            "ego_waypoint": waypoint_dict(ego_waypoint),
+            "lane_space": "unknown",
+        },
+        "weather": weather_dict(world.get_weather()),
+        "actors": nearby_actors,
+        "nearest_front_actor": front_actors[0] if front_actors else None,
+        "summary": {
+            "nearby_actor_count": len(nearby_actors),
+            "front_actor_count": len(front_actors),
+            "nearest_actor_distance_m": nearby_actors[0]["distance_m"] if nearby_actors else None,
+            "nearest_front_distance_m": front_actors[0]["relative_longitudinal_m"] if front_actors else None,
+        },
+    }
+
+
+def write_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def save_scene_states(path, snapshots):
+    with open(path, "w", encoding="utf-8") as f:
+        for snapshot in snapshots:
+            f.write(json.dumps(snapshot, ensure_ascii=False) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate a normal driving scene with CARLA Traffic Manager.")
     parser.add_argument("--carla-root", default="/mnt/data2/congfeng/carla915")
@@ -203,6 +396,7 @@ def main():
     parser.add_argument("--width", type=int, default=800)
     parser.add_argument("--height", type=int, default=450)
     parser.add_argument("--fov", type=float, default=90.0)
+    parser.add_argument("--state-radius", type=float, default=80.0, help="Meters around ego to export actors into L0 state.")
     parser.add_argument("--clean-output", action="store_true", help="Remove old rgb_*.png and ego_log.csv in output dir.")
     args = parser.parse_args()
 
@@ -214,9 +408,14 @@ def main():
     if args.clean_output:
         for path in glob.glob(os.path.join(args.output_dir, "rgb_*.png")):
             os.remove(path)
+        for path in glob.glob(os.path.join(args.output_dir, "state_*.json")):
+            os.remove(path)
         log_path = os.path.join(args.output_dir, "ego_log.csv")
         if os.path.exists(log_path):
             os.remove(log_path)
+        states_path = os.path.join(args.output_dir, "scene_states.jsonl")
+        if os.path.exists(states_path):
+            os.remove(states_path)
 
     client = carla.Client(args.host, args.port)
     client.set_timeout(args.timeout)
@@ -232,6 +431,7 @@ def main():
     camera = None
     image_queue = queue.Queue()
     log_rows = []
+    state_snapshots = []
 
     try:
         settings = world.get_settings()
@@ -305,7 +505,11 @@ def main():
             )
 
             if frame_idx % args.save_every == 0:
-                image.save_to_disk(os.path.join(args.output_dir, f"rgb_{frame_idx:04d}.png"))
+                image_file = f"rgb_{frame_idx:04d}.png"
+                image.save_to_disk(os.path.join(args.output_dir, image_file))
+                snapshot = build_scene_snapshot(carla, world, ego, frame_idx, image_file, args.state_radius)
+                state_snapshots.append(snapshot)
+                write_json(os.path.join(args.output_dir, f"state_{frame_idx:04d}.json"), snapshot)
                 saved += 1
 
             if frame_idx % 20 == 0:
@@ -313,7 +517,9 @@ def main():
 
         log_path = os.path.join(args.output_dir, "ego_log.csv")
         save_ego_log(log_path, log_rows)
-        print(f"Done. Saved {saved} images and ego log: {os.path.abspath(log_path)}")
+        states_path = os.path.join(args.output_dir, "scene_states.jsonl")
+        save_scene_states(states_path, state_snapshots)
+        print(f"Done. Saved {saved} images, ego log, and scene states: {os.path.abspath(args.output_dir)}")
         return 0
 
     finally:

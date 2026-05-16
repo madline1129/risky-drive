@@ -172,6 +172,7 @@ def main():
             "lead_distance": args.lead_distance,
             "lead_speed_difference": args.lead_speed_difference,
             "seed": args.seed,
+            "state_source": "carla_api_state_json",
         },
     }
     write_manifest(os.path.join(run_dir, "manifest.json"), manifest)

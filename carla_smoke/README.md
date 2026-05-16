@@ -1,6 +1,6 @@
 # CARLA Risk Pipeline
 
-This directory contains a small CARLA-to-risk-tree prototype. The current agent pipeline uses the DeepSeek API for text reasoning and stores every run under a timestamped work directory.
+This directory contains a small CARLA-to-risk-tree prototype. CARLA exports the factual L0 scene state through its Python API; DeepSeek is used for L1/L2 text reasoning.
 
 ## Layout
 
@@ -13,7 +13,7 @@ This directory contains a small CARLA-to-risk-tree prototype. The current agent 
 Key pipeline files:
 
 - `pipeline/run.py`: main entry point.
-- `pipeline/l0.py`: DeepSeek L0/L1 agent. It writes a scene state snapshot and five L1 risk weaknesses.
+- `pipeline/l0.py`: reads CARLA API L0 state and asks DeepSeek for five L1 risk weaknesses.
 - `pipeline/l2.py`: DeepSeek L2 agent. It reads L1 risks and writes ten trigger-event hypotheses.
 - `pipeline/deepseek_client.py`: shared DeepSeek chat-completions client.
 
@@ -31,7 +31,7 @@ Set your DeepSeek API key:
 export DEEPSEEK_API_KEY="your_api_key"
 ```
 
-Note: DeepSeek text chat does not inspect image pixels in this pipeline. `l0.py` reasons from the selected image path, CARLA `ego_log.csv`, and optional `--scenario-hint`.
+Note: DeepSeek text chat does not inspect image pixels in this pipeline. L0 is exported by CARLA API as `state_XXXX.json`; DeepSeek only reasons over that structured state.
 
 ## Run Full Pipeline
 
@@ -55,6 +55,8 @@ carla_smoke/workdir/YYYYMMDD_HHMMSS/
   manifest.json
   images/
     rgb_0000.png
+    state_0000.json
+    scene_states.jsonl
     ego_log.csv
   l0/
     state.json
@@ -87,11 +89,11 @@ python carla_smoke/pipeline/l2.py \
 
 ## Risk Tree Files
 
-`l0/state.json` contains:
+`l0/state.json` contains the selected CARLA API snapshot:
 
 - `level: L0`
 - scene root node and structured current-state snapshot
-- ego state, road state, objects, and compact `scene_text`
+- ego speed/location/lane, road/weather, nearby actors, relative distances, and nearest front actor
 
 `l0/risks.json` contains exactly five L1 physical risk weaknesses.
 
