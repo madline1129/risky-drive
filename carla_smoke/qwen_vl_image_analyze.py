@@ -37,8 +37,13 @@ def encode_image(path):
 def ask_ollama(url, model, prompt, image_path, timeout):
     payload = {
         "model": model,
-        "prompt": prompt,
-        "images": [encode_image(image_path)],
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt,
+                "images": [encode_image(image_path)],
+            }
+        ],
         "stream": False,
     }
     data = json.dumps(payload).encode("utf-8")
@@ -51,14 +56,15 @@ def ask_ollama(url, model, prompt, image_path, timeout):
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         body = resp.read().decode("utf-8")
     result = json.loads(body)
-    return result.get("response", "")
+    message = result.get("message", {})
+    return message.get("content", "")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Use Ollama Qwen-VL to analyze CARLA images.")
     parser.add_argument("path", help="Image file or directory of images.")
-    parser.add_argument("--model", default="qwen2.5vl:7b")
-    parser.add_argument("--url", default="http://127.0.0.1:11434/api/generate")
+    parser.add_argument("--model", default="qwen3.5:0.8b")
+    parser.add_argument("--url", default="http://127.0.0.1:11434/api/chat")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--limit", type=int, default=0, help="Max images to analyze; 0 means all.")
