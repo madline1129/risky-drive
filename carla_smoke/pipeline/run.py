@@ -54,6 +54,7 @@ def main():
     parser.add_argument("--model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--deepseek-url", default=DEFAULT_DEEPSEEK_URL)
     parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
+    parser.add_argument("--env-file", default=None, help="Optional .env path. Defaults to searching upward from cwd.")
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--skip-scene", action="store_true", help="Use an existing images directory in this run folder.")
     parser.add_argument("--skip-agents", action="store_true", help="Only generate CARLA images.")
@@ -124,6 +125,8 @@ def main():
             "--output-dir",
             l0_dir,
         ]
+        if args.env_file:
+            l0_command.extend(["--env-file", args.env_file])
         ego_log = os.path.join(image_dir, "ego_log.csv")
         if os.path.exists(ego_log):
             l0_command.extend(["--ego-log", ego_log])
@@ -149,6 +152,8 @@ def main():
                 "--output-dir",
                 l2_dir,
             ]
+            if args.env_file:
+                l2_command.extend(["--env-file", args.env_file])
             run_command(l2_command)
 
     manifest = {

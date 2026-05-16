@@ -15,10 +15,45 @@ class DeepSeekError(RuntimeError):
     pass
 
 
-def get_api_key(env_name):
+def find_env_file(start_dir=None, filename=".env"):
+    current = os.path.abspath(start_dir or os.getcwd())
+    if os.path.isfile(current):
+        current = os.path.dirname(current)
+
+    while True:
+        candidate = os.path.join(current, filename)
+        if os.path.exists(candidate):
+            return candidate
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+
+
+def load_env_file(path=None):
+    env_path = path or find_env_file()
+    if not env_path or not os.path.exists(env_path):
+        return None
+
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    return env_path
+
+
+def get_api_key(env_name, env_file=None):
+    load_env_file(env_file)
     api_key = os.environ.get(env_name)
     if not api_key:
-        raise DeepSeekError(f"Missing API key. Set {env_name}=<your DeepSeek API key>.")
+        hint = f" Put {env_name}=<your key> in .env or export it in the shell."
+        raise DeepSeekError(f"Missing API key.{hint}")
     return api_key
 
 

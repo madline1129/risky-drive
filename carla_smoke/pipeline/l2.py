@@ -186,6 +186,7 @@ def main():
     parser.add_argument("--model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--url", default=DEFAULT_DEEPSEEK_URL)
     parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
+    parser.add_argument("--env-file", default=None, help="Optional .env path. Defaults to searching upward from cwd.")
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--output-dir", default="carla_smoke/workdir/manual/l2")
     args = parser.parse_args()
@@ -198,7 +199,7 @@ def main():
     raw_response = ""
     parsed = None
     try:
-        api_key = get_api_key(args.api_key_env)
+        api_key = get_api_key(args.api_key_env, args.env_file)
         raw_response = chat_json(args.url, args.model, api_key, prompt, args.timeout)
         parsed = parse_json_response(raw_response)
     except (DeepSeekError, json.JSONDecodeError) as exc:

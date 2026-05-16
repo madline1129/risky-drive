@@ -6,6 +6,7 @@
 
 __pycache__/
 *.png
+.env
 *.env
 
 # CARLA smoke-test outputs
