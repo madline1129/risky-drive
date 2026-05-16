@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the minimal pipeline: CARLA normal scene -> saved images -> Qwen L0/L1 subagent."""
+"""Run the minimal pipeline: CARLA normal scene -> saved images -> Qwen L0/L1/L2 subagents."""
 
 import argparse
 import os
@@ -27,8 +27,9 @@ def main():
         "normal_driving_step1_qwen.jsonl",
     )
     default_agent_output_dir = os.path.join(repo_root, "carla_smoke", "outputs", "agent_pipeline", "l0_l1")
+    default_l2_output_dir = os.path.join(repo_root, "carla_smoke", "outputs", "agent_pipeline", "l2")
 
-    parser = argparse.ArgumentParser(description="Generate a normal CARLA scene, save frames, and run the Qwen L0/L1 subagent.")
+    parser = argparse.ArgumentParser(description="Generate a normal CARLA scene, save frames, and run the Qwen L0/L1/L2 subagents.")
     parser.add_argument("--carla-root", default="/mnt/data2/congfeng/carla915")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2000)
@@ -43,6 +44,7 @@ def main():
     parser.add_argument("--image-dir", default=default_image_dir)
     parser.add_argument("--label-output", default=default_label_path)
     parser.add_argument("--agent-output-dir", default=default_agent_output_dir)
+    parser.add_argument("--l2-output-dir", default=default_l2_output_dir)
     parser.add_argument("--qwen-select", choices=["first", "middle", "last"], default="middle")
     parser.add_argument("--scenario-hint", default="")
     parser.add_argument("--qwen-limit", type=int, default=3, help="How many saved images Qwen should annotate; 0 means all.")
@@ -51,6 +53,7 @@ def main():
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434/api/chat")
     parser.add_argument("--skip-scene", action="store_true", help="Only run Qwen annotation on an existing image directory.")
     parser.add_argument("--skip-qwen", action="store_true", help="Only generate CARLA images.")
+    parser.add_argument("--skip-l2", action="store_true", help="Run L0/L1 only; do not generate L2 trigger events.")
     parser.add_argument("--legacy-step1", action="store_true", help="Use the old per-image JSONL risk annotator instead of the L0/L1 subagent.")
     parser.add_argument("--clean-output", action="store_true", help="Clean old scene images before generating new ones.")
     args = parser.parse_args()
@@ -58,6 +61,7 @@ def main():
     scene_script = os.path.join(repo_root, "carla_smoke", "scenes", "normal_driving_scene.py")
     qwen_script = os.path.join(repo_root, "carla_smoke", "pipeline", "step1_qwen_risk_annotation.py")
     l0_l1_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l0_l1_qwen_subagent.py")
+    l2_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l2_qwen_subagent.py")
 
     if not args.skip_scene:
         scene_command = [
@@ -130,6 +134,26 @@ def main():
                 qwen_command.extend(["--scenario-hint", args.scenario_hint])
         run_command(qwen_command)
 
+        if not args.legacy_step1 and not args.skip_l2:
+            l1_json = os.path.join(args.agent_output_dir, "L1_risk_predictions.json")
+            l0_json = os.path.join(args.agent_output_dir, "L0_state_snapshot.json")
+            l2_command = [
+                sys.executable,
+                l2_script,
+                l1_json,
+                "--l0-json",
+                l0_json,
+                "--model",
+                args.model,
+                "--url",
+                args.ollama_url,
+                "--timeout",
+                str(args.qwen_timeout),
+                "--output-dir",
+                args.l2_output_dir,
+            ]
+            run_command(l2_command)
+
     print("\nPipeline finished.")
     print(f"Images: {os.path.abspath(args.image_dir)}")
     if not args.skip_qwen:
@@ -137,6 +161,8 @@ def main():
             print(f"Labels: {os.path.abspath(args.label_output)}")
         else:
             print(f"L0/L1 outputs: {os.path.abspath(args.agent_output_dir)}")
+            if not args.skip_l2:
+                print(f"L2 outputs: {os.path.abspath(args.l2_output_dir)}")
     return 0
 
 
