@@ -120,7 +120,7 @@ def waypoint_ahead(carla, world, base_transform, distance):
     )
 
 
-def spawn_truck(carla, world, blueprints, ego_transform, actors):
+def spawn_truck(carla, world, blueprints, ego_transform, actors, distances):
     truck_bp = first_blueprint(
         blueprints,
         ["vehicle.carlamotors.carlacola", "vehicle.carlamotors.*", "vehicle.tesla.model3", "vehicle.*"],
@@ -128,7 +128,7 @@ def spawn_truck(carla, world, blueprints, ego_transform, actors):
     if truck_bp.has_attribute("role_name"):
         truck_bp.set_attribute("role_name", "smoke_cargo_truck")
 
-    for distance in [42.0, 52.0, 62.0, 32.0, 72.0]:
+    for distance in distances:
         transform = waypoint_ahead(carla, world, ego_transform, distance)
         transform.location.z += 0.6
         truck = world.try_spawn_actor(truck_bp, transform)
@@ -227,7 +227,10 @@ def main():
     parser.add_argument("--frames", type=int, default=120)
     parser.add_argument("--save-every", type=int, default=5)
     parser.add_argument("--cargo-count", type=int, default=5)
-    parser.add_argument("--release-frame", type=int, default=35)
+    parser.add_argument("--release-frame", type=int, default=12)
+    parser.add_argument("--truck-distance", type=float, default=22.0)
+    parser.add_argument("--ego-throttle", type=float, default=0.45)
+    parser.add_argument("--brake-frame-offset", type=int, default=45)
     parser.add_argument("--scripted-drop", action="store_true", help="Animate debris manually after release.")
     args = parser.parse_args()
 
@@ -266,7 +269,14 @@ def main():
         actors.append(ego)
         ego.set_autopilot(False)
 
-        truck, truck_transform = spawn_truck(carla, world, blueprints, ego_transform, actors)
+        truck_distances = [
+            args.truck_distance,
+            args.truck_distance + 6.0,
+            args.truck_distance + 12.0,
+            max(12.0, args.truck_distance - 5.0),
+            args.truck_distance + 20.0,
+        ]
+        truck, truck_transform = spawn_truck(carla, world, blueprints, ego_transform, actors, truck_distances)
         cargo_props = spawn_cargo_props(carla, world, cargo_bp, truck_transform, actors, args.cargo_count)
 
         camera_bp = blueprints.find("sensor.camera.rgb")
@@ -305,8 +315,8 @@ def main():
         released = False
         saved = 0
         for frame_idx in range(args.frames):
-            if frame_idx < args.release_frame + 35:
-                ego.apply_control(carla.VehicleControl(throttle=0.35, steer=0.0))
+            if frame_idx < args.release_frame + args.brake_frame_offset:
+                ego.apply_control(carla.VehicleControl(throttle=args.ego_throttle, steer=0.0))
             else:
                 ego.apply_control(carla.VehicleControl(throttle=0.0, brake=0.65))
 
