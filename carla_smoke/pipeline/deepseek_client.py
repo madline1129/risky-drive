@@ -30,7 +30,7 @@ def find_env_file(start_dir=None, filename=".env"):
         current = parent
 
 
-def load_env_file(path=None):
+def load_env_file(path=None, override=False):
     env_path = path or find_env_file()
     if not env_path or not os.path.exists(env_path):
         return None
@@ -40,16 +40,18 @@ def load_env_file(path=None):
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
             key, value = line.split("=", 1)
             key = key.strip()
             value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
+            if key and (override or key not in os.environ):
                 os.environ[key] = value
     return env_path
 
 
 def get_api_key(env_name, env_file=None):
-    load_env_file(env_file)
+    load_env_file(env_file, override=bool(env_file))
     api_key = os.environ.get(env_name)
     if not api_key:
         hint = f" Put {env_name}=<your key> in .env or export it in the shell."
