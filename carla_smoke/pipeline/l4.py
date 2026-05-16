@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -69,6 +70,82 @@ def run_command(command):
     subprocess.run(command, check=True)
 
 
+def opencode_prompt(config_path, output_script):
+    return f"""You are the L4 code agent for a CARLA risk-scenario pipeline.
+
+Task:
+- Read the attached L4 scenario_config.json.
+- Generate a complete executable Python script at exactly:
+  {output_script}
+- The script must connect to CARLA 0.9.15, spawn an ego vehicle, a front truck, and execute the requested risk event from carla_plan.
+- Save front-camera images into the --output-dir argument as risk_rgb_XXXX.png.
+- Keep the script self-contained. Do not require project imports.
+- Support these CLI arguments: --carla-root, --host, --port, --town, --output-dir, --frames, --save-every.
+- Use synchronous mode and restore original world settings in finally.
+- For cargo_drop or unknown scenario types, implement a scripted projectile/drop from the rear of the front truck toward the ego lane.
+- Use deterministic code. Do not ask questions. Do not write Markdown. Edit/create only the requested Python file.
+
+The generated script will be executed by this pipeline after opencode exits.
+"""
+
+
+def run_opencode(args, config_path):
+    opencode_bin = shutil.which(args.opencode_bin)
+    if not opencode_bin:
+        raise RuntimeError(
+            f"opencode binary not found: {args.opencode_bin}. Install/configure opencode first, "
+            "then rerun with --code-agent opencode."
+        )
+
+    workspace = os.path.join(args.output_dir, "opencode_workspace")
+    os.makedirs(workspace, exist_ok=True)
+    output_script = os.path.join(workspace, "generated_risk_scene.py")
+    prompt = opencode_prompt(config_path, output_script)
+    prompt_path = os.path.join(workspace, "opencode_prompt.txt")
+    write_json(os.path.join(workspace, "opencode_inputs.json"), {"config_path": os.path.abspath(config_path), "output_script": output_script})
+    with open(prompt_path, "w", encoding="utf-8") as f:
+        f.write(prompt)
+
+    command = [
+        opencode_bin,
+        "run",
+        "--model",
+        args.opencode_model,
+        "--dir",
+        workspace,
+        "--file",
+        config_path,
+        prompt,
+    ]
+    run_command(command)
+
+    if not os.path.exists(output_script):
+        raise RuntimeError(f"opencode completed but did not create expected script: {output_script}")
+    return output_script
+
+
+def run_generated_script(args, script_path, images_dir):
+    command = [
+        sys.executable,
+        script_path,
+        "--carla-root",
+        args.carla_root,
+        "--host",
+        args.host,
+        "--port",
+        str(args.port),
+        "--town",
+        args.town,
+        "--output-dir",
+        images_dir,
+        "--frames",
+        str(args.frames),
+        "--save-every",
+        str(args.save_every),
+    ]
+    run_command(command)
+
+
 def main():
     parser = argparse.ArgumentParser(description="L4 code-agent: generate and optionally execute CARLA risk-scene code.")
     parser.add_argument("l3_json", help="Path to l3/chains.json.")
@@ -82,14 +159,14 @@ def main():
     parser.add_argument("--save-every", type=int, default=5)
     parser.add_argument("--execute", action="store_true", help="Run CARLA executor to produce risk images.")
     parser.add_argument("--code-agent", choices=["template", "opencode"], default="template")
+    parser.add_argument("--opencode-bin", default="opencode")
+    parser.add_argument("--opencode-model", default="deepseek/deepseek-v4-pro")
     args = parser.parse_args()
 
     chains_data = read_json(args.l3_json)
     chain = select_chain(chains_data, args.chain_index)
     config = build_config(chain)
     config["code_agent"] = args.code_agent
-    if args.code_agent == "opencode":
-        config["code_agent_note"] = "opencode integration placeholder; template executor is used unless external opencode wiring is added."
 
     os.makedirs(args.output_dir, exist_ok=True)
     config_path = os.path.join(args.output_dir, "scenario_config.json")
@@ -97,7 +174,7 @@ def main():
     write_json(config_path, config)
     print(f"Saved L4 scenario config: {os.path.abspath(config_path)}")
 
-    if args.execute:
+    if args.execute and args.code_agent == "template":
         repo_root = repo_root_from_this_file()
         executor = os.path.join(repo_root, "carla_smoke", "scenes", "risk_event_scene.py")
         command = [
@@ -121,6 +198,11 @@ def main():
             str(args.save_every),
         ]
         run_command(command)
+    elif args.execute and args.code_agent == "opencode":
+        generated_script = run_opencode(args, config_path)
+        config["generated_script"] = generated_script
+        write_json(config_path, config)
+        run_generated_script(args, generated_script, images_dir)
     else:
         print("L4 execution skipped. Add --execute to run CARLA and save risk images.")
 
