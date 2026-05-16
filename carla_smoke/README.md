@@ -1,19 +1,20 @@
 # CARLA Risk Pipeline
 
-This directory contains a small CARLA-to-risk-tree prototype. CARLA exports the factual L0 scene state through its Python API; DeepSeek is used for L1/L2 text reasoning.
+This directory contains a small CARLA-to-risk-tree prototype. CARLA exports the factual L0 scene state through its Python API, local Qwen/Ollama provides visual observations, and DeepSeek performs L1/L2 text reasoning.
 
 ## Layout
 
 - `tests/`: minimal CARLA import/connect tests.
 - `scenes/`: CARLA scene generation scripts.
-- `pipeline/`: DeepSeek agent pipeline.
+- `pipeline/`: Qwen vision and DeepSeek reasoning pipeline.
 - `outputs/`: older/generated scene outputs, ignored by git.
 - `workdir/`: timestamped pipeline runs, ignored by git.
 
 Key pipeline files:
 
 - `pipeline/run.py`: main entry point.
-- `pipeline/l0.py`: reads CARLA API L0 state and asks DeepSeek for five L1 risk weaknesses.
+- `pipeline/vision.py`: calls local Qwen/Ollama on the selected CARLA image and writes visual observations.
+- `pipeline/l0.py`: reads CARLA API L0 state plus optional Qwen vision observations, then asks DeepSeek for five L1 risk weaknesses.
 - `pipeline/l2.py`: DeepSeek L2 agent. It reads L1 risks and writes ten trigger-event hypotheses.
 - `pipeline/deepseek_client.py`: shared DeepSeek chat-completions client.
 
@@ -31,7 +32,7 @@ Set your DeepSeek API key:
 export DEEPSEEK_API_KEY="your_api_key"
 ```
 
-Note: DeepSeek text chat does not inspect image pixels in this pipeline. L0 is exported by CARLA API as `state_XXXX.json`; DeepSeek only reasons over that structured state.
+Note: DeepSeek text chat does not inspect image pixels directly. Qwen handles image observation first; DeepSeek receives the Qwen observation JSON plus CARLA API state.
 
 ## Run Full Pipeline
 
@@ -44,6 +45,7 @@ python carla_smoke/pipeline/run.py \
   --lead-distance 14 \
   --lead-speed-difference 35 \
   --select middle \
+  --qwen-model qwen3.5:0.8b \
   --timeout 300 \
   --clean-images
 ```
@@ -58,6 +60,9 @@ carla_smoke/workdir/YYYYMMDD_HHMMSS/
     state_0000.json
     scene_states.jsonl
     ego_log.csv
+  vision/
+    observations.json
+    qwen_raw.json
   l0/
     state.json
     risks.json
@@ -75,6 +80,7 @@ Run L0/L1 from an existing image directory:
 python carla_smoke/pipeline/l0.py \
   carla_smoke/workdir/YYYYMMDD_HHMMSS/images \
   --select middle \
+  --vision-json carla_smoke/workdir/YYYYMMDD_HHMMSS/vision/observations.json \
   --output-dir carla_smoke/workdir/YYYYMMDD_HHMMSS/l0
 ```
 
@@ -98,3 +104,5 @@ python carla_smoke/pipeline/l2.py \
 `l0/risks.json` contains exactly five L1 physical risk weaknesses.
 
 `l2/triggers.json` contains exactly ten L2 trigger-event hypotheses, roughly two per L1 weakness.
+
+`vision/observations.json` contains Qwen's visual observations. It is auxiliary evidence for DeepSeek; CARLA API state remains the source of truth for distances, speeds, and actor identities.
