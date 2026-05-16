@@ -65,6 +65,18 @@ def spawn_vehicle(world, blueprint, transform, role_name):
     return actor
 
 
+def try_spawn_vehicle(carla, world, blueprint, transform, role_name):
+    if blueprint.has_attribute("role_name"):
+        blueprint.set_attribute("role_name", role_name)
+    spawn_transform = world.get_map().get_waypoint(
+        transform.location,
+        project_to_road=True,
+        lane_type=carla.LaneType.Driving,
+    ).transform
+    spawn_transform.location.z += 0.6
+    return world.try_spawn_actor(blueprint, spawn_transform)
+
+
 def make_front_transform(carla, world, ego_transform, distance=28.0):
     carla_map = world.get_map()
     waypoint = carla_map.get_waypoint(
@@ -145,14 +157,20 @@ def main():
 
         ego_transform = spawn_points[0]
         ego_bp = first_blueprint(blueprints, ["vehicle.lincoln.*", "vehicle.tesla.model3"])
-        front_bp = first_blueprint(blueprints, ["vehicle.carlamotors.carlacola", "vehicle.*"])
+        front_bp = first_blueprint(blueprints, ["vehicle.tesla.model3", "vehicle.audi.*", "vehicle.*"])
 
         ego = spawn_vehicle(world, ego_bp, ego_transform, "hero")
         actors.append(ego)
         ego.set_autopilot(False)
 
-        front_transform = make_front_transform(carla, world, ego_transform, distance=28.0)
-        front_vehicle = spawn_vehicle(world, front_bp, front_transform, "front_blocker")
+        front_vehicle = None
+        for distance in [35.0, 45.0, 55.0, 25.0, 65.0]:
+            front_transform = make_front_transform(carla, world, ego_transform, distance=distance)
+            front_vehicle = try_spawn_vehicle(carla, world, front_bp, front_transform, "front_blocker")
+            if front_vehicle is not None:
+                break
+        if front_vehicle is None:
+            raise RuntimeError("Failed to spawn front_blocker after trying multiple distances.")
         actors.append(front_vehicle)
         front_vehicle.set_autopilot(False)
         front_vehicle.apply_control(carla.VehicleControl(hand_brake=True))
