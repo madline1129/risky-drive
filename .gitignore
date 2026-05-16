@@ -12,3 +12,5 @@ __pycache__/
 # CARLA smoke-test outputs
 carla_smoke/outputs/
 carla_smoke/workdir/
+
+carla_smoke/notebook/note.md
