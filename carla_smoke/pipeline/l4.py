@@ -158,7 +158,7 @@ def main():
     parser.add_argument("--frames", type=int, default=140)
     parser.add_argument("--save-every", type=int, default=5)
     parser.add_argument("--execute", action="store_true", help="Run CARLA executor to produce risk images.")
-    parser.add_argument("--code-agent", choices=["template", "opencode"], default="template")
+    parser.add_argument("--code-agent", choices=["template", "opencode"], default="opencode")
     parser.add_argument("--opencode-bin", default="opencode")
     parser.add_argument("--opencode-model", default="deepseek/deepseek-v4-pro")
     args = parser.parse_args()
