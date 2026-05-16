@@ -106,13 +106,26 @@ def spawn_lead_vehicle(carla, world, traffic_manager, blueprints, ego, distance,
     ego_transform = ego.get_transform()
     for candidate_distance in [distance, distance + 4.0, distance + 8.0, distance + 12.0]:
         lead_transform = transform_ahead(carla, world, ego_transform, candidate_distance)
+        planned_distance = ego_transform.location.distance(lead_transform.location)
+        if planned_distance < max(3.0, candidate_distance * 0.5):
+            forward = ego_transform.get_forward_vector()
+            lead_transform = carla.Transform(
+                ego_transform.location
+                + carla.Location(
+                    x=forward.x * candidate_distance,
+                    y=forward.y * candidate_distance,
+                    z=0.6,
+                ),
+                ego_transform.rotation,
+            )
+            planned_distance = ego_transform.location.distance(lead_transform.location)
+
         lead = world.try_spawn_actor(lead_bp, lead_transform)
         if lead is None:
             continue
         lead.set_autopilot(True, traffic_manager.get_port())
         traffic_manager.vehicle_percentage_speed_difference(lead, speed_difference)
-        actual = ego.get_location().distance(lead.get_location())
-        print(f"Lead vehicle spawned at requested {candidate_distance:.1f} m, actual {actual:.2f} m.")
+        print(f"Lead vehicle spawned at requested {candidate_distance:.1f} m, planned {planned_distance:.2f} m.")
         return lead
 
     print("WARNING: failed to spawn explicit lead vehicle; continuing with random traffic only.")
@@ -187,8 +200,8 @@ def main():
         help="Traffic Manager speed difference for the lead vehicle; positive means slower than the speed limit.",
     )
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--width", type=int, default=1280)
-    parser.add_argument("--height", type=int, default=720)
+    parser.add_argument("--width", type=int, default=800)
+    parser.add_argument("--height", type=int, default=450)
     parser.add_argument("--fov", type=float, default=90.0)
     parser.add_argument("--clean-output", action="store_true", help="Remove old rgb_*.png and ego_log.csv in output dir.")
     args = parser.parse_args()
@@ -239,6 +252,7 @@ def main():
         actor_ids.append(ego.id)
         ego.set_autopilot(True, traffic_manager.get_port())
         traffic_manager.vehicle_percentage_speed_difference(ego, -5.0)
+        world.tick()
 
         lead = spawn_lead_vehicle(
             carla,

@@ -37,7 +37,8 @@ python carla_smoke/pipeline/run_normal_scene_to_qwen.py \
   --vehicles 30 \
   --lead-distance 14 \
   --lead-speed-difference 35 \
-  --qwen-limit 8 \
+  --qwen-limit 3 \
+  --qwen-timeout 300 \
   --clean-output
 ```
 

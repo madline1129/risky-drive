@@ -41,7 +41,8 @@ def main():
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--image-dir", default=default_image_dir)
     parser.add_argument("--label-output", default=default_label_path)
-    parser.add_argument("--qwen-limit", type=int, default=8, help="How many saved images Qwen should annotate; 0 means all.")
+    parser.add_argument("--qwen-limit", type=int, default=3, help="How many saved images Qwen should annotate; 0 means all.")
+    parser.add_argument("--qwen-timeout", type=float, default=300.0)
     parser.add_argument("--model", default="qwen3.5:0.8b")
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434/api/chat")
     parser.add_argument("--skip-scene", action="store_true", help="Only run Qwen annotation on an existing image directory.")
@@ -96,6 +97,9 @@ def main():
             args.ollama_url,
             "--limit",
             str(args.qwen_limit),
+            "--timeout",
+            str(args.qwen_timeout),
+            "--continue-on-error",
             "--output",
             args.label_output,
         ]

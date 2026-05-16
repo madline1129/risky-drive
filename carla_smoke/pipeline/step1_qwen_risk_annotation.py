@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import re
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -139,9 +140,10 @@ def main():
     parser.add_argument("--model", default="qwen3.5:0.8b")
     parser.add_argument("--url", default="http://127.0.0.1:11434/api/chat")
     parser.add_argument("--prompt-file", default=None, help="Optional custom prompt text file.")
-    parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--limit", type=int, default=0, help="Max images to analyze; 0 means all.")
     parser.add_argument("--recursive", action="store_true", help="Scan images recursively when path is a directory.")
+    parser.add_argument("--continue-on-error", action="store_true", help="Save an error row and continue when one image fails.")
     parser.add_argument(
         "--output",
         default="carla_smoke/outputs/risk_labels/step1_qwen_risk_annotations.jsonl",
@@ -162,9 +164,21 @@ def main():
         print(f"[{idx}/{len(image_paths)}] annotate {image_path}")
         try:
             raw_response = call_ollama_chat(args.url, args.model, prompt, image_path, args.timeout)
-        except urllib.error.URLError as exc:
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
             print(f"ERROR: failed to call Ollama at {args.url}: {exc}", file=sys.stderr)
-            return 1
+            if not args.continue_on_error:
+                return 1
+            rows.append(
+                {
+                    "image": os.path.abspath(image_path),
+                    "model": args.model,
+                    "step": "L1_QWEN_RISK_WEAKNESS_ANNOTATION",
+                    "parsed": None,
+                    "raw_response": "",
+                    "error": str(exc),
+                }
+            )
+            continue
 
         parsed = parse_json_response(raw_response)
         if parsed is None:
