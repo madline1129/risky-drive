@@ -65,6 +65,33 @@ def spawn_vehicle(world, blueprint, transform, role_name):
     return actor
 
 
+def destroy_previous_smoke_actors(world):
+    old_actors = []
+    for actor in world.get_actors():
+        role_name = actor.attributes.get("role_name", "")
+        if role_name.startswith("smoke_"):
+            old_actors.append(actor)
+    for actor in old_actors:
+        try:
+            actor.destroy()
+        except RuntimeError:
+            pass
+    if old_actors:
+        print(f"Destroyed {len(old_actors)} previous smoke actors.")
+
+
+def spawn_first_available_vehicle(carla, world, blueprint, spawn_points, role_name, max_tries=40):
+    if blueprint.has_attribute("role_name"):
+        blueprint.set_attribute("role_name", role_name)
+    for transform in spawn_points[:max_tries]:
+        spawn_transform = carla.Transform(transform.location, transform.rotation)
+        spawn_transform.location.z += 0.6
+        actor = world.try_spawn_actor(blueprint, spawn_transform)
+        if actor is not None:
+            return actor, spawn_transform
+    raise RuntimeError(f"Failed to spawn {role_name} after trying {min(max_tries, len(spawn_points))} spawn points.")
+
+
 def try_spawn_vehicle(carla, world, blueprint, transform, role_name):
     if blueprint.has_attribute("role_name"):
         blueprint.set_attribute("role_name", role_name)
@@ -155,18 +182,20 @@ def main():
         if not spawn_points:
             raise RuntimeError("Current map has no vehicle spawn points.")
 
-        ego_transform = spawn_points[0]
+        destroy_previous_smoke_actors(world)
+        world.tick()
+
         ego_bp = first_blueprint(blueprints, ["vehicle.lincoln.*", "vehicle.tesla.model3"])
         front_bp = first_blueprint(blueprints, ["vehicle.tesla.model3", "vehicle.audi.*", "vehicle.*"])
 
-        ego = spawn_vehicle(world, ego_bp, ego_transform, "hero")
+        ego, ego_transform = spawn_first_available_vehicle(carla, world, ego_bp, spawn_points, "smoke_hero")
         actors.append(ego)
         ego.set_autopilot(False)
 
         front_vehicle = None
         for distance in [35.0, 45.0, 55.0, 25.0, 65.0]:
             front_transform = make_front_transform(carla, world, ego_transform, distance=distance)
-            front_vehicle = try_spawn_vehicle(carla, world, front_bp, front_transform, "front_blocker")
+            front_vehicle = try_spawn_vehicle(carla, world, front_bp, front_transform, "smoke_front_blocker")
             if front_vehicle is not None:
                 break
         if front_vehicle is None:
