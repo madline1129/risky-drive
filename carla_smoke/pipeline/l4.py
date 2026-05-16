@@ -113,8 +113,7 @@ def run_opencode(args, config_path):
         args.opencode_model,
         "--dir",
         workspace,
-        "--file",
-        config_path,
+        f"--file={config_path}",
         prompt,
     ]
     run_command(command)
