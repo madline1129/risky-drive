@@ -188,7 +188,7 @@ def main():
             if distance < 7.0:
                 control = carla.VehicleControl(throttle=0.0, brake=0.8)
             elif speed < args.target_speed:
-                control = carla.VehicleControl(throttle=0.28, brake=0.0)
+                control = carla.VehicleControl(throttle=1, brake=0.0)
             else:
                 control = carla.VehicleControl(throttle=0.0, brake=0.08)
             ego.apply_control(control)
