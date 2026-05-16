@@ -135,7 +135,7 @@ def write_jsonl(path, rows):
 
 def main():
     parser = argparse.ArgumentParser(description="Step 1 of the risk decision-tree pipeline: Qwen risk annotation.")
-    parser.add_argument("path", help="Image file or directory, for example carla_smoke/output_approach_truck.")
+    parser.add_argument("path", help="Image file or directory, for example carla_smoke/outputs/approach_truck.")
     parser.add_argument("--model", default="qwen3.5:0.8b")
     parser.add_argument("--url", default="http://127.0.0.1:11434/api/chat")
     parser.add_argument("--prompt-file", default=None, help="Optional custom prompt text file.")
@@ -144,7 +144,7 @@ def main():
     parser.add_argument("--recursive", action="store_true", help="Scan images recursively when path is a directory.")
     parser.add_argument(
         "--output",
-        default="carla_smoke/output_risk_labels/step1_qwen_risk_annotations.jsonl",
+        default="carla_smoke/outputs/risk_labels/step1_qwen_risk_annotations.jsonl",
         help="JSONL file for annotations.",
     )
     args = parser.parse_args()

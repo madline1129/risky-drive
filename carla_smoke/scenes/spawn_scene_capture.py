@@ -5,7 +5,7 @@ Start CARLA first, for example:
     /mnt/data2/congfeng/carla915/CarlaUE4.sh -RenderOffScreen -nosound -carla-port=2000
 
 Then run:
-    python carla_smoke/spawn_scene_capture.py --port 2000 --town Town03
+    python carla_smoke/scenes/spawn_scene_capture.py --port 2000 --town Town03
 """
 
 import argparse
@@ -151,7 +151,7 @@ def main():
     parser.add_argument("--port", type=int, default=2000)
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--town", default=None, help="Optional map to load, e.g. Town03.")
-    parser.add_argument("--output-dir", default="carla_smoke/output_scene")
+    parser.add_argument("--output-dir", default="carla_smoke/outputs/scene")
     parser.add_argument("--frames", type=int, default=80)
     parser.add_argument("--save-every", type=int, default=10)
     args = parser.parse_args()

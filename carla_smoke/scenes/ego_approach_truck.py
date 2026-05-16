@@ -194,7 +194,7 @@ def main():
     parser.add_argument("--port", type=int, default=2000)
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--town", default="Town03")
-    parser.add_argument("--output-dir", default="carla_smoke/output_approach_truck")
+    parser.add_argument("--output-dir", default="carla_smoke/outputs/approach_truck")
     parser.add_argument("--truck-distance", type=float, default=25.0)
     parser.add_argument("--target-speed", type=float, default=4.0, help="Approximate ego speed in m/s.")
     parser.add_argument("--frames", type=int, default=160)

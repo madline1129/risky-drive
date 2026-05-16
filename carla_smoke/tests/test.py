@@ -5,7 +5,7 @@ Start the CARLA server first, for example:
     /home/user/fc/CARLA_0.9.15/CarlaUE4.sh -RenderOffScreen -carla-port=2000
 
 Then run:
-    python carla_smoke/minimal_carla_client.py --port 2000
+    python carla_smoke/tests/test.py --port 2000
 """
 
 import argparse

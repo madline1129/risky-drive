@@ -2,14 +2,20 @@
 
 This directory keeps the minimal CARLA experiments separate from the main ChatScene code. Existing scene scripts are intentionally left in place so server-side commands do not break.
 
-## Files
+## Layout
 
-- `test.py`: minimal CARLA import/connect smoke test.
-- `spawn_scene_capture.py`: spawns a simple CARLA scene and saves front-camera frames.
-- `ego_approach_truck.py`: builds the current ego-approaches-truck scene. It can optionally add cargo falling from the truck.
-- `qwen_vl_image_analyze.py`: general Qwen/Ollama image analysis utility.
-- `step1_qwen_risk_annotation.py`: first decision-tree pipeline step. It asks Qwen-VL to label visible or inferred L1 risk weaknesses from CARLA frames and writes JSONL.
-- `output*/`: generated images, logs, and annotations. These are ignored by git.
+- `tests/`: minimal CARLA import/connect tests.
+- `scenes/`: CARLA scene generation scripts.
+- `pipeline/`: agent/Qwen risk-labeling pipeline scripts.
+- `outputs/`: generated images, logs, and annotations. This directory is ignored by git.
+
+Key scripts:
+
+- `tests/test.py`: verifies Python can import CARLA and connect to the simulator.
+- `scenes/spawn_scene_capture.py`: spawns a simple scene and saves front-camera frames.
+- `scenes/ego_approach_truck.py`: builds the ego-approaches-truck scene, with optional cargo falling from the truck.
+- `pipeline/qwen_vl_image_analyze.py`: general Qwen/Ollama image analysis utility.
+- `pipeline/step1_qwen_risk_annotation.py`: first decision-tree pipeline step. It labels visible or inferred L1 risk weaknesses from CARLA frames and writes JSONL.
 
 ## Typical Flow
 
@@ -22,9 +28,9 @@ bash /mnt/data2/congfeng/carla915/CarlaUE4.sh -carla-port=2000
 Generate the approach-truck scene:
 
 ```bash
-python carla_smoke/ego_approach_truck.py \
+python carla_smoke/scenes/ego_approach_truck.py \
   --port 2000 \
-  --output-dir carla_smoke/output_approach_truck \
+  --output-dir carla_smoke/outputs/approach_truck \
   --truck-distance 20 \
   --target-speed 6
 ```
@@ -32,10 +38,10 @@ python carla_smoke/ego_approach_truck.py \
 Run decision-tree step 1 risk annotation:
 
 ```bash
-python carla_smoke/step1_qwen_risk_annotation.py \
-  carla_smoke/output_approach_truck \
+python carla_smoke/pipeline/step1_qwen_risk_annotation.py \
+  carla_smoke/outputs/approach_truck \
   --limit 5 \
-  --output carla_smoke/output_risk_labels/step1_qwen_risk_annotations.jsonl
+  --output carla_smoke/outputs/risk_labels/step1_qwen_risk_annotations.jsonl
 ```
 
 ## Step 1 Output

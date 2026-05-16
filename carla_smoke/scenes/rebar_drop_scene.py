@@ -223,7 +223,7 @@ def main():
     parser.add_argument("--port", type=int, default=2000)
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--town", default="Town03")
-    parser.add_argument("--output-dir", default="carla_smoke/output_rebar_drop")
+    parser.add_argument("--output-dir", default="carla_smoke/outputs/rebar_drop")
     parser.add_argument("--frames", type=int, default=120)
     parser.add_argument("--save-every", type=int, default=5)
     parser.add_argument("--cargo-count", type=int, default=5)
