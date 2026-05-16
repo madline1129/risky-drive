@@ -1,27 +1,23 @@
-# CARLA Smoke And Risk Pipeline
+# CARLA Risk Pipeline
 
-This directory keeps the minimal CARLA experiments separate from the main ChatScene code. Existing scene scripts are intentionally left in place so server-side commands do not break.
+This directory contains a small CARLA-to-risk-tree prototype. The current agent pipeline uses the DeepSeek API for text reasoning and stores every run under a timestamped work directory.
 
 ## Layout
 
 - `tests/`: minimal CARLA import/connect tests.
 - `scenes/`: CARLA scene generation scripts.
-- `pipeline/`: agent/Qwen risk-labeling pipeline scripts.
-- `outputs/`: generated images, logs, and annotations. This directory is ignored by git.
+- `pipeline/`: DeepSeek agent pipeline.
+- `outputs/`: older/generated scene outputs, ignored by git.
+- `workdir/`: timestamped pipeline runs, ignored by git.
 
-Key scripts:
+Key pipeline files:
 
-- `tests/test.py`: verifies Python can import CARLA and connect to the simulator.
-- `scenes/spawn_scene_capture.py`: spawns a simple scene and saves front-camera frames.
-- `scenes/normal_driving_scene.py`: generates a normal driving sequence with Traffic Manager and saves ego-camera frames.
-- `scenes/ego_approach_truck.py`: builds the ego-approaches-truck scene, with optional cargo falling from the truck.
-- `pipeline/qwen_vl_image_analyze.py`: general Qwen/Ollama image analysis utility.
-- `pipeline/step1_qwen_risk_annotation.py`: first decision-tree pipeline step. It labels visible or inferred L1 risk weaknesses from CARLA frames and writes JSONL.
-- `pipeline/l0_l1_qwen_subagent.py`: Qwen subagent that writes one L0 scene snapshot file and one L1 risk prediction file.
-- `pipeline/l2_qwen_subagent.py`: Qwen text subagent that reads L1 JSON and writes L2 trigger-event hypotheses.
-- `pipeline/run_normal_scene_to_qwen.py`: runs the minimal end-to-end pipeline: normal CARLA scene -> saved images -> Qwen L0/L1/L2 subagents.
+- `pipeline/run.py`: main entry point.
+- `pipeline/l0.py`: DeepSeek L0/L1 agent. It writes a scene state snapshot and five L1 risk weaknesses.
+- `pipeline/l2.py`: DeepSeek L2 agent. It reads L1 risks and writes ten trigger-event hypotheses.
+- `pipeline/deepseek_client.py`: shared DeepSeek chat-completions client.
 
-## Typical Flow
+## Requirements
 
 Start CARLA first:
 
@@ -29,88 +25,74 @@ Start CARLA first:
 bash /mnt/data2/congfeng/carla915/CarlaUE4.sh -carla-port=2000
 ```
 
-Run the minimal normal-driving pipeline:
+Set your DeepSeek API key:
 
 ```bash
-python carla_smoke/pipeline/run_normal_scene_to_qwen.py \
+export DEEPSEEK_API_KEY="your_api_key"
+```
+
+Note: DeepSeek text chat does not inspect image pixels in this pipeline. `l0.py` reasons from the selected image path, CARLA `ego_log.csv`, and optional `--scenario-hint`.
+
+## Run Full Pipeline
+
+```bash
+python carla_smoke/pipeline/run.py \
   --port 2000 \
   --frames 160 \
   --save-every 5 \
   --vehicles 30 \
   --lead-distance 14 \
   --lead-speed-difference 35 \
-  --qwen-select middle \
-  --qwen-timeout 300 \
-  --clean-output
-```
-
-This writes images to `carla_smoke/outputs/normal_driving/`, L0/L1 outputs to `carla_smoke/outputs/agent_pipeline/l0_l1/`, and L2 outputs to `carla_smoke/outputs/agent_pipeline/l2/`. The explicit lead vehicle keeps another car visible near the ego vehicle instead of relying only on random traffic.
-
-The L0/L1 subagent writes two main files:
-
-- `L0_state_snapshot.json`: the current scene root node, including ego state, road state, visible objects, and a compact scene sentence.
-- `L1_risk_predictions.json`: exactly five likely physical risk weaknesses, ranked from 1 to 5.
-
-The L2 subagent reads `L1_risk_predictions.json` and writes:
-
-- `L2_trigger_event_hypotheses.json`: exactly ten trigger-event hypotheses, roughly two per L1 weakness.
-
-Generate only the normal-driving images:
-
-```bash
-python carla_smoke/scenes/normal_driving_scene.py \
-  --port 2000 \
-  --output-dir carla_smoke/outputs/normal_driving \
-  --vehicles 30 \
-  --lead-distance 14 \
-  --clean-output
-```
-
-Generate the approach-truck risk scene:
-
-```bash
-python carla_smoke/scenes/ego_approach_truck.py \
-  --port 2000 \
-  --output-dir carla_smoke/outputs/approach_truck \
-  --truck-distance 20 \
-  --target-speed 6
-```
-
-Run decision-tree step 1 risk annotation:
-
-```bash
-python carla_smoke/pipeline/l0_l1_qwen_subagent.py \
-  carla_smoke/outputs/approach_truck \
   --select middle \
-  --output-dir carla_smoke/outputs/agent_pipeline/l0_l1
+  --timeout 300 \
+  --clean-images
 ```
 
-Run only L2 from an existing L1 JSON:
+Output is grouped by timestamp:
+
+```text
+carla_smoke/workdir/YYYYMMDD_HHMMSS/
+  manifest.json
+  images/
+    rgb_0000.png
+    ego_log.csv
+  l0/
+    state.json
+    risks.json
+    deepseek_raw.json
+  l2/
+    triggers.json
+    deepseek_raw.json
+```
+
+## Run Individual Agents
+
+Run L0/L1 from an existing image directory:
 
 ```bash
-python carla_smoke/pipeline/l2_qwen_subagent.py \
-  carla_smoke/outputs/agent_pipeline/l0_l1/L1_risk_predictions.json \
-  --l0-json carla_smoke/outputs/agent_pipeline/l0_l1/L0_state_snapshot.json \
-  --output-dir carla_smoke/outputs/agent_pipeline/l2
+python carla_smoke/pipeline/l0.py \
+  carla_smoke/workdir/YYYYMMDD_HHMMSS/images \
+  --select middle \
+  --output-dir carla_smoke/workdir/YYYYMMDD_HHMMSS/l0
 ```
 
-## L0/L1 Output
+Run L2 from existing L1 risks:
 
-The L0 file contains the scene root node:
+```bash
+python carla_smoke/pipeline/l2.py \
+  carla_smoke/workdir/YYYYMMDD_HHMMSS/l0/risks.json \
+  --l0-json carla_smoke/workdir/YYYYMMDD_HHMMSS/l0/state.json \
+  --output-dir carla_smoke/workdir/YYYYMMDD_HHMMSS/l2
+```
 
-- `level`: fixed as `L0`.
-- `name`: `场景根节点`.
-- `description`: `当前时刻的场景结构化快照`.
-- `ego`, `road`, `objects`: structured state fields.
-- `scene_text`: one compressed sentence, e.g. ego speed, front vehicle distance, road state, and visible risk objects.
+## Risk Tree Files
 
-The L1 file contains five ranked physical risk predictions. Expected labels include cargo instability, brake-light failure, cyclist proximity, wet road, A-pillar blind spot, large-vehicle occlusion, short following distance, and limited avoidance space.
+`l0/state.json` contains:
 
-## L2 Output
+- `level: L0`
+- scene root node and structured current-state snapshot
+- ego state, road state, objects, and compact `scene_text`
 
-The L2 file contains ten ranked trigger events:
+`l0/risks.json` contains exactly five L1 physical risk weaknesses.
 
-- `parent_l1_rank` and `parent_l1_name`: which L1 weakness this event activates.
-- `trigger_name`: a concrete event, such as rope breakage, front-car sudden braking, cyclist slipping, or a vehicle emerging from occlusion.
-- `counterfactual_intervention`: how to force the event in simulation.
-- `direct_physical_outcome`: the immediate physical consequence before later accident-chain expansion.
+`l2/triggers.json` contains exactly ten L2 trigger-event hypotheses, roughly two per L1 weakness.
