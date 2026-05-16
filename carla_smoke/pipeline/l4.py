@@ -74,7 +74,8 @@ def opencode_prompt(config_path, output_script):
     return f"""You are the L4 code agent for a CARLA risk-scenario pipeline.
 
 Task:
-- Read the attached L4 scenario_config.json.
+- Read the L4 scenario config at:
+  {config_path}
 - Generate a complete executable Python script at exactly:
   {output_script}
 - The script must connect to CARLA 0.9.15, spawn an ego vehicle, a front truck, and execute the requested risk event from carla_plan.
@@ -99,10 +100,19 @@ def run_opencode(args, config_path):
 
     workspace = os.path.join(args.output_dir, "opencode_workspace")
     os.makedirs(workspace, exist_ok=True)
+    workspace_config = os.path.join(workspace, "scenario_config.json")
+    shutil.copyfile(config_path, workspace_config)
     output_script = os.path.join(workspace, "generated_risk_scene.py")
-    prompt = opencode_prompt(config_path, output_script)
+    prompt = opencode_prompt(workspace_config, output_script)
     prompt_path = os.path.join(workspace, "opencode_prompt.txt")
-    write_json(os.path.join(workspace, "opencode_inputs.json"), {"config_path": os.path.abspath(config_path), "output_script": output_script})
+    write_json(
+        os.path.join(workspace, "opencode_inputs.json"),
+        {
+            "config_path": os.path.abspath(config_path),
+            "workspace_config": workspace_config,
+            "output_script": output_script,
+        },
+    )
     with open(prompt_path, "w", encoding="utf-8") as f:
         f.write(prompt)
 
@@ -113,7 +123,6 @@ def run_opencode(args, config_path):
         args.opencode_model,
         "--dir",
         workspace,
-        f"--file={config_path}",
         prompt,
     ]
     run_command(command)
