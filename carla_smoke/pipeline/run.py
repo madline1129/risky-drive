@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run CARLA scene generation, Qwen vision, and DeepSeek L0/L1/L2 risk pipeline."""
+"""Run CARLA scene generation, Qwen vision, and DeepSeek L0-L4 risk pipeline."""
 
 import argparse
 import json
@@ -35,7 +35,7 @@ def main():
     repo_root = repo_root_from_this_file()
     default_workdir_root = os.path.join(repo_root, "carla_smoke", "workdir")
 
-    parser = argparse.ArgumentParser(description="Generate a CARLA scene, run local Qwen vision, then DeepSeek L0/L1/L2 agents.")
+    parser = argparse.ArgumentParser(description="Generate a CARLA scene, run local Qwen vision, then DeepSeek L0-L4 agents.")
     parser.add_argument("--carla-root", default="/mnt/data2/congfeng/carla915")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2000)
@@ -63,6 +63,12 @@ def main():
     parser.add_argument("--skip-vision", action="store_true", help="Skip local Qwen vision observation.")
     parser.add_argument("--skip-agents", action="store_true", help="Only generate CARLA images.")
     parser.add_argument("--skip-l2", action="store_true", help="Run L0/L1 only.")
+    parser.add_argument("--skip-l3", action="store_true", help="Run through L2 only.")
+    parser.add_argument("--skip-l4", action="store_true", help="Run through L3 only; do not execute CARLA risk scene.")
+    parser.add_argument("--l4-chain-index", type=int, default=0)
+    parser.add_argument("--l4-frames", type=int, default=140)
+    parser.add_argument("--l4-save-every", type=int, default=5)
+    parser.add_argument("--code-agent", choices=["template", "opencode"], default="template")
     parser.add_argument("--clean-images", action="store_true", help="Clean old rgb_*.png inside the images directory.")
     args = parser.parse_args()
 
@@ -72,11 +78,15 @@ def main():
     vision_dir = os.path.join(run_dir, "vision")
     l0_dir = os.path.join(run_dir, "l0")
     l2_dir = os.path.join(run_dir, "l2")
+    l3_dir = os.path.join(run_dir, "l3")
+    l4_dir = os.path.join(run_dir, "l4")
 
     scene_script = os.path.join(repo_root, "carla_smoke", "scenes", "normal_driving_scene.py")
     vision_script = os.path.join(repo_root, "carla_smoke", "pipeline", "vision.py")
     l0_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l0.py")
     l2_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l2.py")
+    l3_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l3.py")
+    l4_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l4.py")
 
     os.makedirs(run_dir, exist_ok=True)
 
@@ -183,6 +193,55 @@ def main():
                 l2_command.extend(["--env-file", args.env_file])
             run_command(l2_command)
 
+            if not args.skip_l3:
+                l3_command = [
+                    sys.executable,
+                    l3_script,
+                    os.path.join(l2_dir, "triggers.json"),
+                    "--l0-json",
+                    os.path.join(l0_dir, "state.json"),
+                    "--model",
+                    args.model,
+                    "--url",
+                    args.deepseek_url,
+                    "--api-key-env",
+                    args.api_key_env,
+                    "--timeout",
+                    str(args.timeout),
+                    "--output-dir",
+                    l3_dir,
+                ]
+                if args.env_file:
+                    l3_command.extend(["--env-file", args.env_file])
+                run_command(l3_command)
+
+                if not args.skip_l4:
+                    l4_command = [
+                        sys.executable,
+                        l4_script,
+                        os.path.join(l3_dir, "chains.json"),
+                        "--chain-index",
+                        str(args.l4_chain_index),
+                        "--output-dir",
+                        l4_dir,
+                        "--carla-root",
+                        args.carla_root,
+                        "--host",
+                        args.host,
+                        "--port",
+                        str(args.port),
+                        "--town",
+                        args.town,
+                        "--frames",
+                        str(args.l4_frames),
+                        "--save-every",
+                        str(args.l4_save_every),
+                        "--code-agent",
+                        args.code_agent,
+                        "--execute",
+                    ]
+                    run_command(l4_command)
+
     manifest = {
         "run_id": run_id,
         "run_dir": run_dir,
@@ -190,6 +249,8 @@ def main():
         "vision": None if args.skip_vision or args.skip_agents else vision_dir,
         "l0": l0_dir,
         "l2": None if args.skip_l2 or args.skip_agents else l2_dir,
+        "l3": None if args.skip_l2 or args.skip_l3 or args.skip_agents else l3_dir,
+        "l4": None if args.skip_l2 or args.skip_l3 or args.skip_l4 or args.skip_agents else l4_dir,
         "model": args.model,
         "qwen_model": args.qwen_model,
         "deepseek_url": args.deepseek_url,
@@ -204,6 +265,7 @@ def main():
             "seed": args.seed,
             "state_source": "carla_api_state_json",
             "vision_source": None if args.skip_vision or args.skip_agents else "local_qwen_ollama",
+            "l4_code_agent": args.code_agent,
         },
     }
     write_manifest(os.path.join(run_dir, "manifest.json"), manifest)
@@ -217,6 +279,10 @@ def main():
         print(f"L0/L1: {l0_dir}")
         if not args.skip_l2:
             print(f"L2: {l2_dir}")
+            if not args.skip_l3:
+                print(f"L3: {l3_dir}")
+                if not args.skip_l4:
+                    print(f"L4: {l4_dir}")
     return 0
 
 

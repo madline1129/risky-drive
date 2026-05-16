@@ -1,6 +1,6 @@
 # CARLA Risk Pipeline
 
-This directory contains a small CARLA-to-risk-tree prototype. CARLA exports the factual L0 scene state through its Python API, local Qwen/Ollama provides visual observations, and DeepSeek performs L1/L2 text reasoning.
+This directory contains a small CARLA-to-risk-tree prototype. CARLA exports factual L0 scene state, local Qwen/Ollama provides visual observations, DeepSeek performs L1-L3 text reasoning, and L4 executes a CARLA risk scene from the generated plan.
 
 ## Layout
 
@@ -16,7 +16,10 @@ Key pipeline files:
 - `pipeline/vision.py`: calls local Qwen/Ollama on the selected CARLA image and writes visual observations.
 - `pipeline/l0.py`: reads CARLA API L0 state plus optional Qwen vision observations, then asks DeepSeek for five L1 risk weaknesses.
 - `pipeline/l2.py`: DeepSeek L2 agent. It reads L1 risks and writes ten trigger-event hypotheses.
+- `pipeline/l3.py`: DeepSeek L3 agent. It expands L2 triggers into initial accident chains and CARLA execution plans.
+- `pipeline/l4.py`: code-agent stage. It turns an L3 plan into a CARLA scenario config and can execute it.
 - `pipeline/deepseek_client.py`: shared DeepSeek chat-completions client.
+- `scenes/risk_event_scene.py`: generic CARLA executor used by L4.
 
 ## Requirements
 
@@ -70,6 +73,13 @@ carla_smoke/workdir/YYYYMMDD_HHMMSS/
   l2/
     triggers.json
     deepseek_raw.json
+  l3/
+    chains.json
+    deepseek_raw.json
+  l4/
+    scenario_config.json
+    risk_images/
+      risk_rgb_0000.png
 ```
 
 ## Run Individual Agents
@@ -104,5 +114,11 @@ python carla_smoke/pipeline/l2.py \
 `l0/risks.json` contains exactly five L1 physical risk weaknesses.
 
 `l2/triggers.json` contains exactly ten L2 trigger-event hypotheses, roughly two per L1 weakness.
+
+`l3/chains.json` contains initial accident chains and executable `carla_plan` objects.
+
+`l4/scenario_config.json` is the code-agent output used by `scenes/risk_event_scene.py`.
+
+`l4/risk_images/` contains the rendered CARLA risk scenario frames. Use `--skip-l4` if you only want plans and do not want to run the second CARLA execution.
 
 `vision/observations.json` contains Qwen's visual observations. It is auxiliary evidence for DeepSeek; CARLA API state remains the source of truth for distances, speeds, and actor identities.
