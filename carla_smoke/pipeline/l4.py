@@ -65,9 +65,22 @@ def build_config(chain):
     }
 
 
-def run_command(command):
+def run_command(command, capture_output=False):
     print("\n$ " + " ".join(command))
+    if capture_output:
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        if result.stdout:
+            print(result.stdout, end="")
+        result.check_returncode()
+        return result.stdout or ""
     subprocess.run(command, check=True)
+    return ""
 
 
 def opencode_prompt(config_path, output_script):
@@ -84,9 +97,30 @@ Task:
 - Support these CLI arguments: --carla-root, --host, --port, --town, --output-dir, --frames, --save-every.
 - Use synchronous mode and restore original world settings in finally.
 - For cargo_drop or unknown scenario types, implement a scripted projectile/drop from the rear of the front truck toward the ego lane.
+- Import CARLA safely: add CARLA PythonAPI paths first, then import carla inside main or a helper and return the module.
+- Do not reference a global carla variable before importing it. Avoid patterns like "if carla is None" inside a function that also imports carla.
+- Before finishing, make sure the script would pass "python -m py_compile".
 - Use deterministic code. Do not ask questions. Do not write Markdown. Edit/create only the requested Python file.
 
 The generated script will be executed by this pipeline after opencode exits.
+"""
+
+
+def opencode_repair_prompt(config_path, output_script, error_output):
+    return f"""The generated CARLA script failed when executed.
+
+Scenario config:
+  {config_path}
+
+Script to fix:
+  {output_script}
+
+Execution error:
+{error_output}
+
+Edit the existing script in place. Keep the same CLI arguments and output behavior.
+Fix the root cause, especially CARLA import/scope errors such as UnboundLocalError from referencing carla before import.
+Do not write Markdown. Do not ask questions. Only modify the Python script.
 """
 
 
@@ -132,6 +166,33 @@ def run_opencode(args, config_path):
     return output_script
 
 
+def repair_generated_script(args, config_path, script_path, error_output):
+    opencode_bin = shutil.which(args.opencode_bin)
+    if not opencode_bin:
+        raise RuntimeError(f"opencode binary not found: {args.opencode_bin}")
+
+    workspace = os.path.dirname(script_path)
+    repair_prompt = opencode_repair_prompt(
+        os.path.join(workspace, "scenario_config.json"),
+        script_path,
+        error_output[-8000:],
+    )
+    repair_prompt_path = os.path.join(workspace, "opencode_repair_prompt.txt")
+    with open(repair_prompt_path, "w", encoding="utf-8") as f:
+        f.write(repair_prompt)
+
+    command = [
+        opencode_bin,
+        "run",
+        "--model",
+        args.opencode_model,
+        "--dir",
+        workspace,
+        repair_prompt,
+    ]
+    run_command(command)
+
+
 def run_generated_script(args, script_path, images_dir):
     command = [
         sys.executable,
@@ -151,7 +212,7 @@ def run_generated_script(args, script_path, images_dir):
         "--save-every",
         str(args.save_every),
     ]
-    run_command(command)
+    return run_command(command, capture_output=True)
 
 
 def main():
@@ -210,7 +271,13 @@ def main():
         generated_script = run_opencode(args, config_path)
         config["generated_script"] = generated_script
         write_json(config_path, config)
-        run_generated_script(args, generated_script, images_dir)
+        try:
+            run_generated_script(args, generated_script, images_dir)
+        except subprocess.CalledProcessError as exc:
+            error_output = exc.output or str(exc)
+            print("\nGenerated script failed. Asking opencode to repair it once.")
+            repair_generated_script(args, config_path, generated_script, error_output)
+            run_generated_script(args, generated_script, images_dir)
     else:
         print("L4 execution skipped. Add --execute to run CARLA and save risk images.")
 
