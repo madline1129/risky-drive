@@ -24,6 +24,8 @@ Acceptance is semantic, not only structural. The pipeline checks scenario-specif
 
 The primary actor listed in `event_contract.primary_actor` must be responsible for the risk event. Do not let a background front vehicle braking/collision become the event for every scenario.
 
+Use `carla_plan.actor_motion_plan` to decide actor behavior. L0 is only the initial geometry snapshot; it does not define the future motion by itself.
+
 Examples:
 
 - `front_vehicle_brake`: include front actor speed and ego-front distance before/after trigger.

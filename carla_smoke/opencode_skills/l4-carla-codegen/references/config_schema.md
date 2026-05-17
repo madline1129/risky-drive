@@ -13,6 +13,7 @@ Shared fields:
 - `source_l0_state_file`: original L0 state path when provided.
 - `reconstruction_policy`: requirements for preserving the L0 scene identity.
 - `event_contract`: required per-chain event trace output. Treat this as a hard acceptance contract.
+- `carla_plan.actor_motion_plan`: explicit movement/behavior plan for all important actors after the L0 snapshot.
 
 When `scene_reconstruction` is present, use it before generic spawn points:
 
@@ -28,6 +29,15 @@ Event trace:
 - `event_trace.scenario_type` must match `carla_plan.scenario_type`.
 - `event_trace.frames` must record the event-specific physical state over time.
 - Use `event_contract.required_frame_fields` to choose per-frame keys.
+
+Actor motion plan:
+
+- L0 provides initial appearance and geometry only.
+- `actor_motion_plan.ego` controls the ego behavior after the snapshot.
+- `actor_motion_plan.front_actor` controls the nearest front actor behavior; it may be a primary actor, occluder, carrier, or background object.
+- `actor_motion_plan.primary_actor` is the actor that must create the risk event.
+- `actor_motion_plan.background_actors` describes whether to preserve, ignore, or hold background actors.
+- Do not invent a simpler front-car braking/collision behavior if `actor_motion_plan.primary_actor` is not the front actor.
 
 Scenario-specific fields:
 

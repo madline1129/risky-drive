@@ -105,7 +105,7 @@ def normalize_l4_plan(plan):
     trigger_frame = int(plan.get("trigger_frame", 45) or 45)
 
     if scenario_type == "front_vehicle_brake":
-        return {
+        normalized = {
             "scenario_type": scenario_type,
             "target_actor": plan.get("target_actor", "front_vehicle"),
             "trigger_frame": trigger_frame,
@@ -117,9 +117,11 @@ def normalize_l4_plan(plan):
                 "前车在自车前方突然减速或接近停止，自车前向距离快速压缩",
             ),
         }
+        normalized["actor_motion_plan"] = plan.get("actor_motion_plan") or default_actor_motion_plan(normalized)
+        return normalized
 
     if scenario_type == "vulnerable_actor_intrusion":
-        return {
+        normalized = {
             "scenario_type": scenario_type,
             "actor_type": plan.get("actor_type", "walker"),
             "trigger_frame": trigger_frame,
@@ -132,9 +134,11 @@ def normalize_l4_plan(plan):
                 "弱势交通参与者从侧前方侵入自车行驶空间",
             ),
         }
+        normalized["actor_motion_plan"] = plan.get("actor_motion_plan") or default_actor_motion_plan(normalized)
+        return normalized
 
     if scenario_type == "cargo_drop":
-        return {
+        normalized = {
             "scenario_type": scenario_type,
             "target_actor": plan.get("target_actor", "front_truck"),
             "object_type": plan.get("object_type", "metal_pipe"),
@@ -157,8 +161,10 @@ def normalize_l4_plan(plan):
                 "货物/障碍物从前方车辆后部进入自车前方区域",
             ),
         }
+        normalized["actor_motion_plan"] = plan.get("actor_motion_plan") or default_actor_motion_plan(normalized)
+        return normalized
 
-    return {
+    normalized = {
         "scenario_type": "road_obstacle_intrusion",
         "object_type": plan.get("object_type", "road_obstacle"),
         "trigger_frame": trigger_frame,
@@ -174,6 +180,101 @@ def normalize_l4_plan(plan):
             },
         ),
         "expected_visual_result": plan.get("expected_visual_result", "障碍物出现在自车前方车道内"),
+    }
+    normalized["actor_motion_plan"] = plan.get("actor_motion_plan") or default_actor_motion_plan(normalized)
+    return normalized
+
+
+def default_actor_motion_plan(plan):
+    scenario_type = plan.get("scenario_type")
+    trigger_frame = int(plan.get("trigger_frame", 45) or 45)
+    if scenario_type == "front_vehicle_brake":
+        return {
+            "ego": {
+                "role": "following_observer_vehicle",
+                "behavior": "follow_front_actor",
+                "target_speed_mps": 4.0,
+                "avoid_collision": True,
+                "stop_if_distance_below_m": 4.0,
+            },
+            "front_actor": {
+                "role": "primary_actor",
+                "behavior": "brake_after_trigger",
+                "trigger_frame": trigger_frame,
+                "brake_intensity": plan.get("brake_intensity", 1.0),
+                "target_speed_mps": plan.get("target_speed_mps", 0.0),
+            },
+            "primary_actor": {"role": "front_actor", "behavior": "brake_after_trigger"},
+            "background_actors": {"behavior": "preserve_l0_or_ignore_if_not_relevant"},
+        }
+    if scenario_type == "vulnerable_actor_intrusion":
+        return {
+            "ego": {
+                "role": "observer_vehicle",
+                "behavior": "slow_approach",
+                "target_speed_mps": 3.0,
+                "avoid_collision": True,
+                "stop_if_distance_below_m": 4.0,
+                "must_remain_moving_until_trigger": True,
+            },
+            "front_actor": {
+                "role": "occluder",
+                "behavior": "stationary_or_slow",
+                "must_not_be_primary_event": True,
+            },
+            "primary_actor": {
+                "role": plan.get("actor_type", "walker"),
+                "behavior": "cross_ego_lane_after_trigger",
+                "trigger_frame": trigger_frame,
+                "start": "from_occluded_side_near_front_actor",
+                "end": "across_ego_lane_centerline",
+                "speed_mps": plan.get("speed_mps", 2.2),
+                "must_enter_ego_lane": True,
+            },
+            "background_actors": {"behavior": "preserve_l0_or_ignore_if_not_relevant"},
+        }
+    if scenario_type == "cargo_drop":
+        return {
+            "ego": {
+                "role": "observer_vehicle",
+                "behavior": "slow_approach",
+                "target_speed_mps": 3.0,
+                "avoid_collision": True,
+                "stop_if_distance_below_m": 5.0,
+            },
+            "front_actor": {
+                "role": "carrier_or_occluder",
+                "behavior": "steady_or_slow",
+                "must_not_be_primary_event": True,
+            },
+            "primary_actor": {
+                "role": "payload",
+                "behavior": "drop_or_slide_toward_ego_lane_after_trigger",
+                "trigger_frame": trigger_frame,
+                "must_enter_ego_path": True,
+            },
+            "background_actors": {"behavior": "preserve_l0_or_ignore_if_not_relevant"},
+        }
+    return {
+        "ego": {
+            "role": "observer_vehicle",
+            "behavior": "slow_approach",
+            "target_speed_mps": 3.0,
+            "avoid_collision": True,
+            "stop_if_distance_below_m": 4.0,
+        },
+        "front_actor": {
+            "role": "background_or_occluder",
+            "behavior": "preserve_l0_or_stationary",
+            "must_not_be_primary_event": True,
+        },
+        "primary_actor": {
+            "role": "road_obstacle",
+            "behavior": "appear_or_move_into_ego_lane_after_trigger",
+            "trigger_frame": trigger_frame,
+            "must_enter_ego_lane": True,
+        },
+        "background_actors": {"behavior": "preserve_l0_or_ignore_if_not_relevant"},
     }
 
 
@@ -510,6 +611,8 @@ Task:
 - Replace the NotImplementedError with scenario-specific behavior from scenario_config.json.
 - Reconstruct the scene from L0 scene_reconstruction/source state: preserve town/map, weather, ego pose, nearest front actor, and relevant nearby actors as much as CARLA spawn constraints allow.
 - Do not choose an unrelated spawn point when L0 ego.location/rotation is available.
+- Follow carla_plan.actor_motion_plan exactly. L0 gives the initial picture; actor_motion_plan gives what every actor should do after L0.
+- Do not invent actor behavior that contradicts actor_motion_plan.
 - The script must connect to CARLA 0.9.15, reconstruct the L0 ego/front/relevant actors, and execute the requested risk event from carla_plan.
 - Save front-camera images into the --output-dir argument as risk_rgb_XXXX.png.
 - Write --output-dir/event_trace.json exactly as required by scenario_config.event_contract. The trace must prove that this chain's physical event was applied.

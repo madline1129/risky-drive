@@ -19,6 +19,7 @@ L3 初始事故链：
 - 必须把语义事件变成 CARLA 可执行/可近似执行的计划。
 - L3 负责把 L2 的“触发事件”展开成第一段物理演化，并生成类型化 carla_plan。
 - 不要把不同类型的事件混合到一个 carla_plan 里；除非 L2 明确是复合触发，否则 front_vehicle_brake 不应包含掉落物，cargo_drop 不应包含前车急刹。
+- L3 必须为 carla_plan 增加 actor_motion_plan，说明 ego、前方车辆、风险主体、背景参与者分别怎么运动。L0 只提供初始画面，后续运动不能留给 L4/code agent 猜。
 
 例子：
 - L2: 绳索断裂
@@ -53,16 +54,22 @@ L3 初始事故链：
           "gravity": true
         },
         "expected_visual_result": "掉落物出现在自车前方近距离区域"
+        "actor_motion_plan": {
+          "ego": {"role": "observer_vehicle", "behavior": "slow_approach", "target_speed_mps": 3.0, "avoid_collision": true},
+          "front_actor": {"role": "carrier", "behavior": "steady_or_slow", "must_not_be_primary_event": true},
+          "primary_actor": {"role": "payload", "behavior": "drop_or_slide_toward_ego_lane_after_trigger", "trigger_frame": 45},
+          "background_actors": {"behavior": "preserve_l0_or_ignore_if_not_relevant"}
+        }
       }
     }
   ]
 }
 
 carla_plan 类型边界：
-- front_vehicle_brake：只描述前车减速/急刹。允许字段：scenario_type, target_actor, trigger_frame, brake_intensity, deceleration_mps2, target_speed_mps, expected_visual_result。不要包含 object_type, initial_position, motion。
-- cargo_drop：只描述货物/障碍物从前方车辆脱落或滑落。允许字段：scenario_type, target_actor, object_type, object_count, trigger_frame, spawn_relative_to, initial_position, motion, expected_visual_result。
-- vulnerable_actor_intrusion：只描述行人/骑行者侵入自车行驶空间。允许字段：scenario_type, actor_type, trigger_frame, spawn_relative_to, start_position, crossing_direction, speed_mps, expected_visual_result。
-- road_obstacle_intrusion：只描述静态/低速障碍物进入车道。允许字段：scenario_type, object_type, trigger_frame, spawn_relative_to, initial_position, motion, expected_visual_result。
+- front_vehicle_brake：只描述前车减速/急刹。前车是 primary_actor，ego 是跟随观察车。不要包含 object_type, initial_position, motion。
+- cargo_drop：只描述货物/障碍物从前方车辆脱落或滑落。payload 是 primary_actor，前车只是 carrier/occluder。
+- vulnerable_actor_intrusion：只描述行人/骑行者侵入自车行驶空间。行人/骑行者是 primary_actor，前车如存在只是 occluder。
+- road_obstacle_intrusion：只描述静态/低速障碍物进入车道。障碍物是 primary_actor。
 
 硬性要求：
 - initial_accident_chains 最多 10 项，优先覆盖输入中的前 10 个 L2。
@@ -72,6 +79,7 @@ carla_plan 类型边界：
 - 如果 L2 与前车急刹/低速停滞有关，生成 front_vehicle_brake 计划。
 - 如果 L2 与骑行者/行人有关，生成 vulnerable_actor_intrusion 计划。
 - 不要为了“可视化明显”给无关类型添加 metal_pipe 或 scripted_projectile。
+- actor_motion_plan 必须具体写清楚各参与者行为，尤其是 primary_actor 和非目标 actor；非目标 actor 不得抢占为主事件。
 """
 
 
@@ -112,6 +120,27 @@ def cargo_drop_plan(trigger_frame=45, object_type="metal_pipe"):
             "gravity": True,
         },
         "expected_visual_result": "货物/障碍物从前方车辆后部进入自车前方区域",
+        "actor_motion_plan": {
+            "ego": {
+                "role": "observer_vehicle",
+                "behavior": "slow_approach",
+                "target_speed_mps": 3.0,
+                "avoid_collision": True,
+                "stop_if_distance_below_m": 5.0,
+            },
+            "front_actor": {
+                "role": "carrier_or_occluder",
+                "behavior": "steady_or_slow",
+                "must_not_be_primary_event": True,
+            },
+            "primary_actor": {
+                "role": "payload",
+                "behavior": "drop_or_slide_toward_ego_lane_after_trigger",
+                "trigger_frame": trigger_frame,
+                "must_enter_ego_path": True,
+            },
+            "background_actors": {"behavior": "preserve_l0_or_ignore_if_not_relevant"},
+        },
     }
 
 
@@ -124,6 +153,24 @@ def front_vehicle_brake_plan(trigger_frame=45):
         "deceleration_mps2": 6.0,
         "target_speed_mps": 0.0,
         "expected_visual_result": "前车在自车前方突然减速或接近停止，自车前向距离快速压缩",
+        "actor_motion_plan": {
+            "ego": {
+                "role": "following_observer_vehicle",
+                "behavior": "follow_front_actor",
+                "target_speed_mps": 4.0,
+                "avoid_collision": True,
+                "stop_if_distance_below_m": 4.0,
+            },
+            "front_actor": {
+                "role": "primary_actor",
+                "behavior": "brake_after_trigger",
+                "trigger_frame": trigger_frame,
+                "brake_intensity": 1.0,
+                "target_speed_mps": 0.0,
+            },
+            "primary_actor": {"role": "front_actor", "behavior": "brake_after_trigger"},
+            "background_actors": {"behavior": "preserve_l0_or_ignore_if_not_relevant"},
+        },
     }
 
 
@@ -137,6 +184,31 @@ def vulnerable_actor_intrusion_plan(trigger_frame=45, actor_type="walker"):
         "crossing_direction": "right_to_left",
         "speed_mps": 2.2 if actor_type == "walker" else 4.0,
         "expected_visual_result": "弱势交通参与者从侧前方侵入自车行驶空间",
+        "actor_motion_plan": {
+            "ego": {
+                "role": "observer_vehicle",
+                "behavior": "slow_approach",
+                "target_speed_mps": 3.0,
+                "avoid_collision": True,
+                "stop_if_distance_below_m": 4.0,
+                "must_remain_moving_until_trigger": True,
+            },
+            "front_actor": {
+                "role": "occluder",
+                "behavior": "stationary_or_slow",
+                "must_not_be_primary_event": True,
+            },
+            "primary_actor": {
+                "role": actor_type,
+                "behavior": "cross_ego_lane_after_trigger",
+                "trigger_frame": trigger_frame,
+                "start": "from_occluded_side_near_front_actor",
+                "end": "across_ego_lane_centerline",
+                "speed_mps": 2.2 if actor_type == "walker" else 4.0,
+                "must_enter_ego_lane": True,
+            },
+            "background_actors": {"behavior": "preserve_l0_or_ignore_if_not_relevant"},
+        },
     }
 
 
@@ -154,6 +226,27 @@ def road_obstacle_intrusion_plan(trigger_frame=45):
             "gravity": False,
         },
         "expected_visual_result": "障碍物出现在自车前方车道内",
+        "actor_motion_plan": {
+            "ego": {
+                "role": "observer_vehicle",
+                "behavior": "slow_approach",
+                "target_speed_mps": 3.0,
+                "avoid_collision": True,
+                "stop_if_distance_below_m": 4.0,
+            },
+            "front_actor": {
+                "role": "background_or_occluder",
+                "behavior": "preserve_l0_or_stationary",
+                "must_not_be_primary_event": True,
+            },
+            "primary_actor": {
+                "role": "road_obstacle",
+                "behavior": "appear_or_move_into_ego_lane_after_trigger",
+                "trigger_frame": trigger_frame,
+                "must_enter_ego_lane": True,
+            },
+            "background_actors": {"behavior": "preserve_l0_or_ignore_if_not_relevant"},
+        },
     }
 
 
@@ -172,27 +265,27 @@ def sanitize_carla_plan(plan):
     trigger_frame = int(plan.get("trigger_frame", 45) or 45)
     if scenario_type == "front_vehicle_brake":
         sanitized = front_vehicle_brake_plan(trigger_frame)
-        for key in ["target_actor", "brake_intensity", "deceleration_mps2", "target_speed_mps", "expected_visual_result"]:
+        for key in ["target_actor", "brake_intensity", "deceleration_mps2", "target_speed_mps", "expected_visual_result", "actor_motion_plan"]:
             if key in plan:
                 sanitized[key] = plan[key]
         return sanitized
 
     if scenario_type == "vulnerable_actor_intrusion":
         sanitized = vulnerable_actor_intrusion_plan(trigger_frame, plan.get("actor_type", "walker"))
-        for key in ["spawn_relative_to", "start_position", "crossing_direction", "speed_mps", "expected_visual_result"]:
+        for key in ["spawn_relative_to", "start_position", "crossing_direction", "speed_mps", "expected_visual_result", "actor_motion_plan"]:
             if key in plan:
                 sanitized[key] = plan[key]
         return sanitized
 
     if scenario_type == "cargo_drop":
         sanitized = cargo_drop_plan(trigger_frame, plan.get("object_type", "metal_pipe"))
-        for key in ["target_actor", "object_type", "object_count", "spawn_relative_to", "initial_position", "motion", "expected_visual_result"]:
+        for key in ["target_actor", "object_type", "object_count", "spawn_relative_to", "initial_position", "motion", "expected_visual_result", "actor_motion_plan"]:
             if key in plan:
                 sanitized[key] = plan[key]
         return sanitized
 
     sanitized = road_obstacle_intrusion_plan(trigger_frame)
-    for key in ["object_type", "spawn_relative_to", "initial_position", "motion", "expected_visual_result"]:
+    for key in ["object_type", "spawn_relative_to", "initial_position", "motion", "expected_visual_result", "actor_motion_plan"]:
         if key in plan:
             sanitized[key] = plan[key]
     return sanitized
