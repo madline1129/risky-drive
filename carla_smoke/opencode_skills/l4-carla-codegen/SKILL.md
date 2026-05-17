@@ -29,9 +29,14 @@ Use this skill when asked to create or fix `generated_risk_scene.py` for the Cha
 - Do not reference a global `carla` variable before importing it.
 - Respect `carla_plan.scenario_type` exactly. Do not merge unrelated event types.
 - Use `event_contract` as a hard acceptance contract. The script must execute that event and record trace fields proving it.
+- Treat `event_contract.primary_actor` as the event owner. Background actors can occlude or provide context, but must not become the main event.
+- Satisfy `event_contract.numeric_acceptance` with real actor state, not fabricated trace values.
 - Preserve the L0 scene identity where possible: use the L0 map, weather, ego transform, actor types, relative distances, and lane relationships.
 - If a L0 transform is occupied, move minimally along the lane or upward in z; do not switch to an unrelated map region.
 - For `front_vehicle_brake`, do not spawn payloads, metal pipes, or projectile objects.
+- For `vulnerable_actor_intrusion`, the vulnerable actor must cross into the ego lane while the ego is still moving; the front vehicle is only an occluder/context actor.
+- For `cargo_drop`, the payload must be the moving risk actor; do not reduce it to a generic front-car braking scene.
+- For `road_obstacle_intrusion`, the obstacle must be placed or moved into the ego lane; do not reduce it to a generic front-car braking scene.
 - For `cargo_drop`, do not add front-vehicle braking unless explicitly configured as a compound event.
 - Avoid random behavior unless it has deterministic fallbacks.
 - Use `world.try_spawn_actor` for vehicles and props where possible; handle spawn failures with fallback transforms or clear errors.

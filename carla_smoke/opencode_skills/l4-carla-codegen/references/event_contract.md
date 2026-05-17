@@ -15,6 +15,15 @@ Required top-level fields:
 
 Frame dictionaries should include the fields named by `scenario_config["event_contract"]["required_frame_fields"]`.
 
+Acceptance is semantic, not only structural. The pipeline checks scenario-specific numeric behavior:
+
+- `front_vehicle_brake`: front actor speed must drop and ego-front distance must change.
+- `cargo_drop`: payload must exist, move after trigger, and approach the ego path.
+- `vulnerable_actor_intrusion`: ego must still be moving near trigger; the vulnerable actor must move, approach ego, enter the ego lane laterally, and cross the lane centerline.
+- `road_obstacle_intrusion`: obstacle must be in or move into the ego lane near the ego path.
+
+The primary actor listed in `event_contract.primary_actor` must be responsible for the risk event. Do not let a background front vehicle braking/collision become the event for every scenario.
+
 Examples:
 
 - `front_vehicle_brake`: include front actor speed and ego-front distance before/after trigger.

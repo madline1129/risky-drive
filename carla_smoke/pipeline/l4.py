@@ -189,37 +189,80 @@ def build_event_contract(plan):
     if scenario_type == "front_vehicle_brake":
         base.update(
             {
+                "primary_actor": "front_actor",
+                "background_actors": ["ego", "nearby_actors"],
                 "event_applied": "front actor braking/deceleration after trigger_frame",
                 "required_frame_fields": ["frame", "ego_speed_mps", "front_actor_speed_mps", "front_distance_m"],
                 "success_condition": "front_actor_speed_mps decreases after trigger_frame and front_distance_m changes over time",
                 "forbidden": ["payload actors", "metal_pipe", "scripted projectile/drop unless scenario_type is cargo_drop"],
+                "numeric_acceptance": {
+                    "front_actor_speed_drop_mps_min": 1.0,
+                    "front_distance_change_m_min": 1.0,
+                },
             }
         )
     elif scenario_type == "cargo_drop":
         base.update(
             {
+                "primary_actor": "payload",
+                "background_actors": ["ego", "front_actor"],
                 "event_applied": "configured payload/obstacle leaves the front actor and enters/approaches the ego lane",
-                "required_frame_fields": ["frame", "ego_speed_mps", "payload_count", "payload_positions"],
+                "required_frame_fields": ["frame", "ego_speed_mps", "payload_count", "payload_positions", "payload_distance_to_ego_m"],
                 "success_condition": "payload_count > 0 and payload_positions change after trigger_frame",
                 "forbidden": ["front-vehicle braking as the primary event unless explicitly configured"],
+                "numeric_acceptance": {
+                    "payload_count_min": 1,
+                    "payload_motion_m_min": 0.5,
+                    "payload_min_distance_to_ego_m_max": 15.0,
+                },
             }
         )
     elif scenario_type == "vulnerable_actor_intrusion":
         base.update(
             {
+                "primary_actor": "vulnerable_actor",
+                "background_actors": ["ego", "front_actor_as_occluder", "nearby_actors"],
                 "event_applied": "configured walker/cyclist moves into ego driving space",
-                "required_frame_fields": ["frame", "ego_speed_mps", "vulnerable_actor_position", "distance_to_ego_m"],
+                "required_frame_fields": [
+                    "frame",
+                    "ego_speed_mps",
+                    "vulnerable_actor_position",
+                    "distance_to_ego_m",
+                    "relative_longitudinal_m",
+                    "relative_lateral_m",
+                ],
                 "success_condition": "vulnerable actor position changes toward/through ego lane after trigger_frame",
                 "forbidden": ["payload actors", "metal_pipe", "front-vehicle braking as the primary event"],
+                "numeric_acceptance": {
+                    "pre_trigger_ego_speed_mps_min": 1.0,
+                    "actor_motion_m_min": 1.0,
+                    "distance_drop_m_min": 1.0,
+                    "min_distance_to_ego_m_max": 8.0,
+                    "min_abs_relative_lateral_m_max": 2.2,
+                    "relative_lateral_crosses_zero": True,
+                },
             }
         )
     elif scenario_type == "road_obstacle_intrusion":
         base.update(
             {
+                "primary_actor": "road_obstacle",
+                "background_actors": ["ego", "nearby_actors"],
                 "event_applied": "configured road obstacle appears or moves into ego lane",
-                "required_frame_fields": ["frame", "ego_speed_mps", "obstacle_positions"],
+                "required_frame_fields": [
+                    "frame",
+                    "ego_speed_mps",
+                    "obstacle_positions",
+                    "obstacle_distance_to_ego_m",
+                    "obstacle_relative_lateral_m",
+                ],
                 "success_condition": "obstacle is visible/placed in ego path after trigger_frame",
                 "forbidden": ["metal_pipe cargo drop unless object_type requests it", "front-vehicle braking as the primary event"],
+                "numeric_acceptance": {
+                    "obstacle_count_min": 1,
+                    "min_obstacle_distance_to_ego_m_max": 12.0,
+                    "min_abs_obstacle_relative_lateral_m_max": 2.2,
+                },
             }
         )
     else:
@@ -474,6 +517,7 @@ Task:
 - Support these CLI arguments: --carla-root, --host, --port, --town, --output-dir, --frames, --save-every.
 - Use synchronous mode and restore original world settings in finally.
 - Respect carla_plan.scenario_type exactly. Do not combine unrelated actions across scenario types.
+- Respect scenario_config.event_contract.primary_actor. The primary actor must drive the visible risk event; background actors must not become the main event.
 - For front_vehicle_brake, implement only front-vehicle braking/deceleration. Do not spawn payloads or metal pipes unless the config explicitly uses cargo_drop.
 - For cargo_drop, implement payload/drop motion from the configured object and motion fields.
 - For vulnerable_actor_intrusion, implement a walker/cyclist intrusion using actor_type and crossing fields.
@@ -504,6 +548,7 @@ Execution error:
 Edit the existing script in place. Keep the same CLI arguments and output behavior.
 Fix the root cause, especially CARLA import/scope errors such as UnboundLocalError from referencing carla before import.
 If the failure mentions event_trace, implement or fix --output-dir/event_trace.json according to scenario_config.event_contract.
+If the failure mentions semantic validation, change the physical scene so the primary actor satisfies event_contract.numeric_acceptance; do not fake trace values.
 Read reference_executor.py, context/known_failures.md, and the current generated_risk_scene.py before editing.
 Do not write Markdown. Do not ask questions. Only modify the Python script.
 """
@@ -602,6 +647,56 @@ def error_output_from_exception(exc):
     return getattr(exc, "output", None) or getattr(exc, "stdout", None) or getattr(exc, "stderr", None) or str(exc)
 
 
+def frame_value(frame, key):
+    value = frame.get(key)
+    if isinstance(value, list) and value:
+        value = value[0]
+    return value
+
+
+def numeric_values(frames, key):
+    values = []
+    for frame in frames:
+        value = frame_value(frame, key)
+        if isinstance(value, (int, float)):
+            values.append(float(value))
+    return values
+
+
+def point_from_value(value):
+    if isinstance(value, dict):
+        if all(axis in value for axis in ("x", "y", "z")):
+            return (float(value["x"]), float(value["y"]), float(value["z"]))
+    if isinstance(value, (list, tuple)) and len(value) >= 3:
+        return (float(value[0]), float(value[1]), float(value[2]))
+    return None
+
+
+def point_values(frames, key):
+    points = []
+    for frame in frames:
+        value = frame_value(frame, key)
+        point = point_from_value(value)
+        if point:
+            points.append(point)
+    return points
+
+
+def point_distance(a, b):
+    return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2) ** 0.5
+
+
+def split_frames_by_trigger(frames, trigger_frame):
+    before = [frame for frame in frames if int(frame.get("frame", -1)) < trigger_frame]
+    after = [frame for frame in frames if int(frame.get("frame", -1)) >= trigger_frame]
+    return before, after
+
+
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
 def validate_generated_script(script_path):
     run_command([sys.executable, "-m", "py_compile", script_path], capture_output=True)
     run_command([sys.executable, script_path, "--help"], capture_output=True)
@@ -631,7 +726,68 @@ def validate_event_trace(config_path, images_dir):
         raise RuntimeError("event_trace.frames must be a non-empty list of per-frame event state.")
     if not trace.get("event_applied"):
         raise RuntimeError("event_trace.event_applied must describe the chain-specific event that was executed.")
+    validate_event_trace_semantics(config, trace, frames)
     return trace_path
+
+
+def validate_event_trace_semantics(config, trace, frames):
+    plan = config.get("carla_plan", {})
+    scenario_type = plan.get("scenario_type")
+    trigger_frame = int(trace.get("trigger_frame", plan.get("trigger_frame", config.get("trigger_frame", 45))) or 45)
+    before, after = split_frames_by_trigger(frames, trigger_frame)
+    require(after, f"event_trace has no frames at or after trigger_frame={trigger_frame}")
+
+    if scenario_type == "front_vehicle_brake":
+        speeds_after = numeric_values(after, "front_actor_speed_mps")
+        distances = numeric_values(frames, "front_distance_m")
+        require(len(speeds_after) >= 2, "front_vehicle_brake trace must include front_actor_speed_mps after trigger.")
+        require(max(speeds_after) - min(speeds_after) >= 1.0, "front_vehicle_brake did not show enough front actor speed drop.")
+        require(distances and max(distances) - min(distances) >= 1.0, "front_vehicle_brake did not show enough ego-front distance change.")
+        forbidden_text = json.dumps(trace, ensure_ascii=False).lower()
+        require("payload" not in forbidden_text and "metal_pipe" not in forbidden_text, "front_vehicle_brake trace includes payload/metal_pipe template artifacts.")
+        return
+
+    if scenario_type == "cargo_drop":
+        payload_counts = numeric_values(after, "payload_count")
+        require(payload_counts and max(payload_counts) >= 1, "cargo_drop trace must show payload_count >= 1 after trigger.")
+        payload_points = point_values(after, "payload_positions")
+        if len(payload_points) >= 2:
+            motion = max(point_distance(payload_points[0], point) for point in payload_points[1:])
+            require(motion >= 0.5, "cargo_drop payload positions did not move enough after trigger.")
+        payload_distances = numeric_values(after, "payload_distance_to_ego_m")
+        if payload_distances:
+            require(min(payload_distances) <= 15.0, "cargo_drop payload never approached ego path closely enough.")
+        return
+
+    if scenario_type == "vulnerable_actor_intrusion":
+        ego_before = numeric_values(before[-10:] if before else [], "ego_speed_mps")
+        require(ego_before and max(ego_before) >= 1.0, "vulnerable_actor_intrusion trigger occurs after ego has already stopped.")
+        actor_points = point_values(after, "vulnerable_actor_position")
+        require(len(actor_points) >= 2, "vulnerable_actor_intrusion trace must include actor positions after trigger.")
+        actor_motion = max(point_distance(actor_points[0], point) for point in actor_points[1:])
+        require(actor_motion >= 1.0, "vulnerable_actor_intrusion actor did not move enough after trigger.")
+        distances = numeric_values(after, "distance_to_ego_m")
+        require(distances, "vulnerable_actor_intrusion trace must include distance_to_ego_m after trigger.")
+        require(min(distances) <= 8.0, "vulnerable_actor_intrusion actor never got close enough to ego.")
+        require(distances[0] - min(distances) >= 1.0, "vulnerable_actor_intrusion actor did not approach ego enough after trigger.")
+        laterals = numeric_values(after, "relative_lateral_m")
+        require(laterals, "vulnerable_actor_intrusion trace must include relative_lateral_m after trigger.")
+        require(min(abs(value) for value in laterals) <= 2.2, "vulnerable_actor_intrusion actor never entered ego lane laterally.")
+        require(min(laterals) <= 0.0 <= max(laterals), "vulnerable_actor_intrusion actor did not cross ego lane centerline.")
+        forbidden_text = json.dumps(trace, ensure_ascii=False).lower()
+        require("payload" not in forbidden_text and "metal_pipe" not in forbidden_text, "vulnerable_actor_intrusion trace includes cargo template artifacts.")
+        return
+
+    if scenario_type == "road_obstacle_intrusion":
+        positions = point_values(after, "obstacle_positions")
+        require(positions, "road_obstacle_intrusion trace must include obstacle_positions after trigger.")
+        distances = numeric_values(after, "obstacle_distance_to_ego_m")
+        if distances:
+            require(min(distances) <= 12.0, "road_obstacle_intrusion obstacle never got close enough to ego.")
+        laterals = numeric_values(after, "obstacle_relative_lateral_m")
+        if laterals:
+            require(min(abs(value) for value in laterals) <= 2.2, "road_obstacle_intrusion obstacle never entered ego lane laterally.")
+        return
 
 
 def repair_then_validate(args, config_path, script_path, error_output):
