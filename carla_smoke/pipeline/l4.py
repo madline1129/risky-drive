@@ -45,6 +45,21 @@ def select_chain(chains_data, index):
     return chains[index]
 
 
+def chains_from_data(chains_data):
+    chains = chains_data.get("initial_accident_chains", [])
+    if not chains:
+        raise ValueError("No initial_accident_chains found in L3 JSON.")
+    return chains
+
+
+def chain_output_dir(base_output_dir, chain, index, all_chains):
+    if not all_chains:
+        return base_output_dir
+    chain_id = str(chain.get("id") or f"chain_{index:02d}")
+    safe_id = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in chain_id)
+    return os.path.join(base_output_dir, f"{index:02d}_{safe_id}")
+
+
 def compact_l0_scene(l0_state):
     if not isinstance(l0_state, dict):
         return None
@@ -556,34 +571,13 @@ def run_generated_script_with_repair(args, config_path, script_path, images_dir)
     raise RuntimeError(last_error)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="L4 code-agent: generate and optionally execute CARLA risk-scene code.")
-    parser.add_argument("l3_json", help="Path to l3/chains.json.")
-    parser.add_argument("--chain-index", type=int, default=0)
-    parser.add_argument("--output-dir", default="carla_smoke/workdir/manual/l4")
-    parser.add_argument("--l0-json", default=None, help="Optional L0 state.json used to reconstruct the original scene.")
-    parser.add_argument("--carla-root", default="/mnt/data2/congfeng/carla915")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=2000)
-    parser.add_argument("--town", default="Town03")
-    parser.add_argument("--frames", type=int, default=140)
-    parser.add_argument("--save-every", type=int, default=5)
-    parser.add_argument("--execute", action="store_true", help="Run CARLA executor to produce risk images.")
-    parser.add_argument("--code-agent", choices=["template", "opencode"], default="opencode")
-    parser.add_argument("--opencode-bin", default="opencode")
-    parser.add_argument("--opencode-model", default="deepseek/deepseek-v4-pro")
-    parser.add_argument("--opencode-repair-attempts", type=int, default=REPAIR_ATTEMPTS)
-    args = parser.parse_args()
-
-    chains_data = read_json(args.l3_json)
-    chain = select_chain(chains_data, args.chain_index)
-    l0_state = read_json(args.l0_json) if args.l0_json else None
+def execute_chain(args, chain, l0_state, chain_dir):
     config = build_config(chain, l0_state, args.l0_json)
     config["code_agent"] = args.code_agent
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    config_path = os.path.join(args.output_dir, "scenario_config.json")
-    images_dir = os.path.join(args.output_dir, "risk_images")
+    os.makedirs(chain_dir, exist_ok=True)
+    config_path = os.path.join(chain_dir, "scenario_config.json")
+    images_dir = os.path.join(chain_dir, "risk_images")
     write_json(config_path, config)
     print(f"Saved L4 scenario config: {os.path.abspath(config_path)}")
 
@@ -623,6 +617,66 @@ def main():
         run_generated_script_with_repair(args, config_path, generated_script, images_dir)
     else:
         print("L4 execution skipped. Add --execute to run CARLA and save risk images.")
+
+    return {
+        "chain_id": chain.get("id"),
+        "source_l2_id": chain.get("parent_l2_id"),
+        "output_dir": os.path.abspath(chain_dir),
+        "scenario_config": os.path.abspath(config_path),
+        "risk_images": os.path.abspath(images_dir),
+        "scenario_type": config.get("carla_plan", {}).get("scenario_type"),
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="L4 code-agent: generate and optionally execute CARLA risk-scene code.")
+    parser.add_argument("l3_json", help="Path to l3/chains.json.")
+    parser.add_argument("--chain-index", type=int, default=0)
+    parser.add_argument("--all-chains", action="store_true", help="Generate L4 outputs for every chain in l3_json.")
+    parser.add_argument("--output-dir", default="carla_smoke/workdir/manual/l4")
+    parser.add_argument("--l0-json", default=None, help="Optional L0 state.json used to reconstruct the original scene.")
+    parser.add_argument("--carla-root", default="/mnt/data2/congfeng/carla915")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=2000)
+    parser.add_argument("--town", default="Town03")
+    parser.add_argument("--frames", type=int, default=140)
+    parser.add_argument("--save-every", type=int, default=5)
+    parser.add_argument("--execute", action="store_true", help="Run CARLA executor to produce risk images.")
+    parser.add_argument("--code-agent", choices=["template", "opencode"], default="opencode")
+    parser.add_argument("--opencode-bin", default="opencode")
+    parser.add_argument("--opencode-model", default="deepseek/deepseek-v4-pro")
+    parser.add_argument("--opencode-repair-attempts", type=int, default=REPAIR_ATTEMPTS)
+    args = parser.parse_args()
+
+    chains_data = read_json(args.l3_json)
+    l0_state = read_json(args.l0_json) if args.l0_json else None
+
+    if args.all_chains:
+        chains = chains_from_data(chains_data)
+        results = []
+        os.makedirs(args.output_dir, exist_ok=True)
+        for index, chain in enumerate(chains, start=1):
+            print(f"\n=== L4 chain {index}/{len(chains)}: {chain.get('id', index)} ===")
+            original_output_dir = args.output_dir
+            args.output_dir = chain_output_dir(original_output_dir, chain, index, True)
+            try:
+                results.append(execute_chain(args, chain, l0_state, args.output_dir))
+            finally:
+                args.output_dir = original_output_dir
+        manifest_path = os.path.join(args.output_dir, "l4_manifest.json")
+        write_json(
+            manifest_path,
+            {
+                "mode": "all_chains",
+                "source_l3_file": os.path.abspath(args.l3_json),
+                "chain_count": len(results),
+                "results": results,
+            },
+        )
+        print(f"Saved L4 manifest: {os.path.abspath(manifest_path)}")
+    else:
+        chain = select_chain(chains_data, args.chain_index)
+        execute_chain(args, chain, l0_state, args.output_dir)
 
     return 0
 

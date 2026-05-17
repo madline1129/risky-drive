@@ -66,6 +66,7 @@ def main():
     parser.add_argument("--skip-l3", action="store_true", help="Run through L2 only.")
     parser.add_argument("--skip-l4", action="store_true", help="Run through L3 only; do not execute CARLA risk scene.")
     parser.add_argument("--l4-chain-index", type=int, default=0)
+    parser.add_argument("--l4-all-chains", action="store_true", help="Run L4 for every chain in l3/chains.json.")
     parser.add_argument("--l4-frames", type=int, default=140)
     parser.add_argument("--l4-save-every", type=int, default=5)
     parser.add_argument("--code-agent", choices=["template", "opencode"], default="template")
@@ -223,8 +224,6 @@ def main():
                         sys.executable,
                         l4_script,
                         os.path.join(l3_dir, "chains.json"),
-                        "--chain-index",
-                        str(args.l4_chain_index),
                         "--output-dir",
                         l4_dir,
                         "--l0-json",
@@ -251,6 +250,10 @@ def main():
                         str(args.opencode_repair_attempts),
                         "--execute",
                     ]
+                    if args.l4_all_chains:
+                        l4_command.append("--all-chains")
+                    else:
+                        l4_command.extend(["--chain-index", str(args.l4_chain_index)])
                     run_command(l4_command)
 
     manifest = {

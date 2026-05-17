@@ -121,6 +121,16 @@ python carla_smoke/pipeline/l2.py \
 
 `l4/risk_images/` contains the rendered CARLA risk scenario frames. Use `--skip-l4` if you only want plans and do not want to run the second CARLA execution.
 
+By default L4 runs one selected L3 chain (`--l4-chain-index`, default `0`). To run every L3 chain, pass:
+
+```bash
+python carla_smoke/pipeline/run.py \
+  --code-agent opencode \
+  --l4-all-chains
+```
+
+In all-chains mode, each chain writes to a separate subdirectory under `l4/`, and `l4/l4_manifest.json` lists the generated outputs.
+
 To use real opencode for L4 code generation, install/configure opencode with a DeepSeek model and run:
 
 ```bash
@@ -131,13 +141,14 @@ python carla_smoke/pipeline/run.py \
   --opencode-model deepseek/deepseek-v4-pro
 ```
 
-In this mode, `pipeline/l4.py` creates `l4/opencode_workspace/`, copies reusable skills from `carla_smoke/opencode_skills/` into `.opencode/skills/`, seeds `generated_risk_scene.py` from the reference executor, and calls `opencode run` to edit that script in place. The pipeline then validates the script with `py_compile` and `--help`, allows up to three opencode repair attempts, and executes the generated script to produce `l4/risk_images/`.
+In this mode, `pipeline/l4.py` creates `opencode_workspace/`, copies reusable skills from `carla_smoke/opencode_skills/` into `.opencode/skills/`, seeds `generated_risk_scene.py`, copies L0 state when available, and calls `opencode run` to edit that script in place. The pipeline then validates the script with `py_compile` and `--help`, allows up to three opencode repair attempts, and executes the generated script to produce `risk_images/`.
 
 The opencode workspace contains:
 
 - `.opencode/skills/l4-carla-codegen/`
 - `AGENTS.md`
 - `scenario_config.json`
+- `l0_state.json` when `--l0-json` is provided
 - `reference_executor.py`
 - `generated_risk_scene.py`
 - `context/`
