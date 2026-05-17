@@ -227,6 +227,8 @@ def main():
                         str(args.l4_chain_index),
                         "--output-dir",
                         l4_dir,
+                        "--l0-json",
+                        os.path.join(l0_dir, "state.json"),
                         "--carla-root",
                         args.carla_root,
                         "--host",

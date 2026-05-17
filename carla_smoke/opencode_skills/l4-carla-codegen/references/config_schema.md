@@ -9,6 +9,17 @@ Shared fields:
 - `carla_plan`: nested execution plan from L3.
 - `carla_plan.scenario_type`: scenario category. Respect it exactly and do not merge unrelated categories.
 - `carla_plan.trigger_frame`: preferred risk-event start frame.
+- `scene_reconstruction`: compact L0 state used to rebuild the original scene context.
+- `source_l0_state_file`: original L0 state path when provided.
+- `reconstruction_policy`: requirements for preserving the L0 scene identity.
+
+When `scene_reconstruction` is present, use it before generic spawn points:
+
+- `scene_reconstruction.source_map`: preferred map/town.
+- `scene_reconstruction.ego.location` and `.rotation`: ego spawn anchor.
+- `scene_reconstruction.weather`: weather to apply.
+- `scene_reconstruction.nearest_front_actor`: actor to recreate for front-vehicle events.
+- `scene_reconstruction.actors`: relevant nearby actors to optionally recreate.
 
 Scenario-specific fields:
 

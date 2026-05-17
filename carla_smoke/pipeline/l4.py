@@ -45,6 +45,36 @@ def select_chain(chains_data, index):
     return chains[index]
 
 
+def compact_l0_scene(l0_state):
+    if not isinstance(l0_state, dict):
+        return None
+    source = l0_state.get("source", {})
+    road = l0_state.get("road", {})
+    ego = l0_state.get("ego", {})
+    actors = l0_state.get("actors", [])
+    nearest_front = l0_state.get("nearest_front_actor")
+    source_map = source.get("map") or road.get("map")
+    preferred_town = os.path.basename(str(source_map)) if source_map else None
+    return {
+        "source_frame": source.get("frame"),
+        "source_image_file": source.get("image_file"),
+        "source_map": source_map,
+        "preferred_town": preferred_town,
+        "ego": {
+            "type_id": ego.get("type_id"),
+            "speed_mps": ego.get("speed_mps"),
+            "speed_kmh": ego.get("speed_kmh"),
+            "location": ego.get("location"),
+            "rotation": ego.get("rotation"),
+            "road": ego.get("road"),
+        },
+        "weather": l0_state.get("weather", {}),
+        "nearest_front_actor": nearest_front,
+        "actors": actors[:20] if isinstance(actors, list) else [],
+        "summary": l0_state.get("summary", {}),
+    }
+
+
 def normalize_l4_plan(plan):
     if not isinstance(plan, dict):
         plan = {}
@@ -132,19 +162,30 @@ def normalize_l4_plan(plan):
     }
 
 
-def build_config(chain):
+def build_config(chain, l0_state=None, l0_json_path=None):
     plan = normalize_l4_plan(chain.get("carla_plan", {}))
+    scene_reconstruction = compact_l0_scene(l0_state)
     return {
         "level": "L4",
         "name": "CARLA代码执行",
-        "description": "将L3初始事故链转为可执行CARLA风险场景",
+        "description": "在L0场景事实基础上，将L3初始事故链转为可执行CARLA风险场景",
         "source_l3_chain_id": chain.get("id"),
         "source_l2_id": chain.get("parent_l2_id"),
+        "source_l0_state_file": os.path.abspath(l0_json_path) if l0_json_path else None,
         "chain_description": chain.get("chain_description"),
         "direct_physical_outcome": chain.get("direct_physical_outcome"),
         "truck_distance": 18.0,
         "trigger_frame": plan.get("trigger_frame", 45),
         "carla_plan": plan,
+        "scene_reconstruction": scene_reconstruction,
+        "reconstruction_policy": {
+            "base_scene": "Reconstruct the L4 risk scene from L0 state instead of choosing unrelated spawn points.",
+            "town": "Use source_map from L0 when available; otherwise use --town.",
+            "weather": "Apply L0 weather when available.",
+            "ego": "Spawn ego near L0 ego.location/rotation and match ego type when possible.",
+            "front_actor": "For front-vehicle scenarios, spawn the nearest_front_actor at its L0 relative position when available.",
+            "nearby_actors": "Optionally recreate nearby L0 actors when they materially affect the selected risk event.",
+        },
         "executor": "carla_smoke/scenes/risk_event_scene.py",
     }
 
@@ -301,6 +342,8 @@ def prepare_opencode_workspace(args, config_path):
 
     workspace_config = os.path.join(workspace, "scenario_config.json")
     shutil.copyfile(config_path, workspace_config)
+    if args.l0_json:
+        shutil.copyfile(args.l0_json, os.path.join(workspace, "l0_state.json"))
 
     output_script = os.path.join(workspace, "generated_risk_scene.py")
     reference_path = reference_executor_path()
@@ -320,8 +363,9 @@ def prepare_opencode_workspace(args, config_path):
             "# OpenCode Workspace Instructions\n\n"
             "Use the `l4-carla-codegen` skill for this workspace.\n"
             "Edit only `generated_risk_scene.py` unless explicitly asked otherwise.\n"
-            "Read `scenario_config.json`, `reference_executor.py`, and the files under `context/` before editing.\n"
+            "Read `scenario_config.json`, optional `l0_state.json`, `reference_executor.py`, and the files under `context/` before editing.\n"
             "Keep the generated script self-contained and compatible with the L4 pipeline CLI.\n"
+            "Reconstruct the risk scene from L0 state when available instead of using unrelated default spawn points.\n"
         )
 
     write_json(
@@ -331,6 +375,7 @@ def prepare_opencode_workspace(args, config_path):
             "workspace_config": workspace_config,
             "output_script": output_script,
             "skill": "l4-carla-codegen",
+            "l0_state": os.path.join(workspace, "l0_state.json") if args.l0_json else None,
         },
     )
     return workspace, workspace_config, output_script
@@ -342,11 +387,14 @@ def opencode_prompt(config_path, output_script):
 Task:
 - Read the L4 scenario config at:
   {config_path}
+- Read l0_state.json if it exists.
 - Read reference_executor.py and the files under context/. Use reference_executor.py for CARLA mechanics only, not as an event template.
 - Edit the neutral seeded Python script in place at exactly:
   {output_script}
 - Replace the NotImplementedError with scenario-specific behavior from scenario_config.json.
-- The script must connect to CARLA 0.9.15, spawn an ego vehicle, a front truck, and execute the requested risk event from carla_plan.
+- Reconstruct the scene from L0 scene_reconstruction/source state: preserve town/map, weather, ego pose, nearest front actor, and relevant nearby actors as much as CARLA spawn constraints allow.
+- Do not choose an unrelated spawn point when L0 ego.location/rotation is available.
+- The script must connect to CARLA 0.9.15, reconstruct the L0 ego/front/relevant actors, and execute the requested risk event from carla_plan.
 - Save front-camera images into the --output-dir argument as risk_rgb_XXXX.png.
 - Keep the script self-contained. Do not require project imports.
 - Support these CLI arguments: --carla-root, --host, --port, --town, --output-dir, --frames, --save-every.
@@ -513,6 +561,7 @@ def main():
     parser.add_argument("l3_json", help="Path to l3/chains.json.")
     parser.add_argument("--chain-index", type=int, default=0)
     parser.add_argument("--output-dir", default="carla_smoke/workdir/manual/l4")
+    parser.add_argument("--l0-json", default=None, help="Optional L0 state.json used to reconstruct the original scene.")
     parser.add_argument("--carla-root", default="/mnt/data2/congfeng/carla915")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2000)
@@ -528,7 +577,8 @@ def main():
 
     chains_data = read_json(args.l3_json)
     chain = select_chain(chains_data, args.chain_index)
-    config = build_config(chain)
+    l0_state = read_json(args.l0_json) if args.l0_json else None
+    config = build_config(chain, l0_state, args.l0_json)
     config["code_agent"] = args.code_agent
 
     os.makedirs(args.output_dir, exist_ok=True)
