@@ -17,6 +17,8 @@ L3 初始事故链：
 - 对每个 L2 触发事件，构思它导致的直接物理后果。
 - L3 不是最终事故，也不是二次事故；只描述触发后第一段物理演化。
 - 必须把语义事件变成 CARLA 可执行/可近似执行的计划。
+- L3 负责把 L2 的“触发事件”展开成第一段物理演化，并生成类型化 carla_plan。
+- 不要把不同类型的事件混合到一个 carla_plan 里；除非 L2 明确是复合触发，否则 front_vehicle_brake 不应包含掉落物，cargo_drop 不应包含前车急刹。
 
 例子：
 - L2: 绳索断裂
@@ -56,6 +58,12 @@ L3 初始事故链：
   ]
 }
 
+carla_plan 类型边界：
+- front_vehicle_brake：只描述前车减速/急刹。允许字段：scenario_type, target_actor, trigger_frame, brake_intensity, deceleration_mps2, target_speed_mps, expected_visual_result。不要包含 object_type, initial_position, motion。
+- cargo_drop：只描述货物/障碍物从前方车辆脱落或滑落。允许字段：scenario_type, target_actor, object_type, object_count, trigger_frame, spawn_relative_to, initial_position, motion, expected_visual_result。
+- vulnerable_actor_intrusion：只描述行人/骑行者侵入自车行驶空间。允许字段：scenario_type, actor_type, trigger_frame, spawn_relative_to, start_position, crossing_direction, speed_mps, expected_visual_result。
+- road_obstacle_intrusion：只描述静态/低速障碍物进入车道。允许字段：scenario_type, object_type, trigger_frame, spawn_relative_to, initial_position, motion, expected_visual_result。
+
 硬性要求：
 - initial_accident_chains 最多 10 项，优先覆盖输入中的前 10 个 L2。
 - 每项必须包含 carla_plan。
@@ -63,6 +71,7 @@ L3 初始事故链：
 - 如果 L2 与货物/绳索/固定/掉落有关，优先生成 cargo_drop 计划。
 - 如果 L2 与前车急刹/低速停滞有关，生成 front_vehicle_brake 计划。
 - 如果 L2 与骑行者/行人有关，生成 vulnerable_actor_intrusion 计划。
+- 不要为了“可视化明显”给无关类型添加 metal_pipe 或 scripted_projectile。
 """
 
 
@@ -86,6 +95,109 @@ def trigger_events_from_data(data):
     return []
 
 
+def cargo_drop_plan(trigger_frame=45, object_type="metal_pipe"):
+    return {
+        "scenario_type": "cargo_drop",
+        "target_actor": "front_truck",
+        "object_type": object_type,
+        "object_count": 5,
+        "trigger_frame": trigger_frame,
+        "spawn_relative_to": "front_truck",
+        "initial_position": {"x": -3.2, "y": 0.0, "z": 2.4},
+        "motion": {
+            "mode": "scripted_projectile",
+            "direction": "toward_ego",
+            "back_speed_mps": 8.0,
+            "lateral_drift_mps": 0.2,
+            "gravity": True,
+        },
+        "expected_visual_result": "货物/障碍物从前方车辆后部进入自车前方区域",
+    }
+
+
+def front_vehicle_brake_plan(trigger_frame=45):
+    return {
+        "scenario_type": "front_vehicle_brake",
+        "target_actor": "front_vehicle",
+        "trigger_frame": trigger_frame,
+        "brake_intensity": 1.0,
+        "deceleration_mps2": 6.0,
+        "target_speed_mps": 0.0,
+        "expected_visual_result": "前车在自车前方突然减速或接近停止，自车前向距离快速压缩",
+    }
+
+
+def vulnerable_actor_intrusion_plan(trigger_frame=45, actor_type="walker"):
+    return {
+        "scenario_type": "vulnerable_actor_intrusion",
+        "actor_type": actor_type,
+        "trigger_frame": trigger_frame,
+        "spawn_relative_to": "ego_lane_right",
+        "start_position": {"x": 18.0, "y": 4.0, "z": 0.2},
+        "crossing_direction": "right_to_left",
+        "speed_mps": 2.2 if actor_type == "walker" else 4.0,
+        "expected_visual_result": "弱势交通参与者从侧前方侵入自车行驶空间",
+    }
+
+
+def road_obstacle_intrusion_plan(trigger_frame=45):
+    return {
+        "scenario_type": "road_obstacle_intrusion",
+        "object_type": "road_obstacle",
+        "trigger_frame": trigger_frame,
+        "spawn_relative_to": "front_of_ego",
+        "initial_position": {"x": 14.0, "y": 0.0, "z": 0.4},
+        "motion": {
+            "mode": "static_or_slow_intrusion",
+            "direction": "into_ego_lane",
+            "lateral_drift_mps": 0.5,
+            "gravity": False,
+        },
+        "expected_visual_result": "障碍物出现在自车前方车道内",
+    }
+
+
+def sanitize_carla_plan(plan):
+    if not isinstance(plan, dict):
+        plan = {}
+    scenario_type = plan.get("scenario_type")
+    if scenario_type not in {
+        "cargo_drop",
+        "front_vehicle_brake",
+        "vulnerable_actor_intrusion",
+        "road_obstacle_intrusion",
+    }:
+        scenario_type = "road_obstacle_intrusion"
+
+    trigger_frame = int(plan.get("trigger_frame", 45) or 45)
+    if scenario_type == "front_vehicle_brake":
+        sanitized = front_vehicle_brake_plan(trigger_frame)
+        for key in ["target_actor", "brake_intensity", "deceleration_mps2", "target_speed_mps", "expected_visual_result"]:
+            if key in plan:
+                sanitized[key] = plan[key]
+        return sanitized
+
+    if scenario_type == "vulnerable_actor_intrusion":
+        sanitized = vulnerable_actor_intrusion_plan(trigger_frame, plan.get("actor_type", "walker"))
+        for key in ["spawn_relative_to", "start_position", "crossing_direction", "speed_mps", "expected_visual_result"]:
+            if key in plan:
+                sanitized[key] = plan[key]
+        return sanitized
+
+    if scenario_type == "cargo_drop":
+        sanitized = cargo_drop_plan(trigger_frame, plan.get("object_type", "metal_pipe"))
+        for key in ["target_actor", "object_type", "object_count", "spawn_relative_to", "initial_position", "motion", "expected_visual_result"]:
+            if key in plan:
+                sanitized[key] = plan[key]
+        return sanitized
+
+    sanitized = road_obstacle_intrusion_plan(trigger_frame)
+    for key in ["object_type", "spawn_relative_to", "initial_position", "motion", "expected_visual_result"]:
+        if key in plan:
+            sanitized[key] = plan[key]
+    return sanitized
+
+
 def fallback_plan_for_event(event, index):
     trigger = event.get("trigger_name", "待确认触发事件") if isinstance(event, dict) else str(event)
     event_id = event.get("id", f"L2-{index}") if isinstance(event, dict) else f"L2-{index}"
@@ -95,22 +207,24 @@ def fallback_plan_for_event(event, index):
         scenario_type = "cargo_drop"
         description = "货物失去约束后从前方货车区域向自车方向滑落/飞出"
         outcome = "掉落物进入自车前方车道，迫使自车紧急制动或避让"
-        object_type = "metal_pipe"
+        carla_plan = cargo_drop_plan()
     elif any(keyword in text for keyword in ["急刹", "减速", "停滞", "刹车"]):
         scenario_type = "front_vehicle_brake"
         description = "前车突然减速或停止，自车跟车距离被快速压缩"
         outcome = "自车前向安全距离不足，形成追尾风险"
-        object_type = "front_vehicle"
+        carla_plan = front_vehicle_brake_plan()
     elif any(keyword in text for keyword in ["骑行", "行人", "滑倒", "转向"]):
         scenario_type = "vulnerable_actor_intrusion"
         description = "弱势交通参与者轨迹突变并侵入自车行驶空间"
         outcome = "自车需要紧急制动或侧向避让"
-        object_type = "walker"
+        carla_plan = vulnerable_actor_intrusion_plan(actor_type="walker")
     else:
-        scenario_type = "cargo_drop"
+        scenario_type = "road_obstacle_intrusion"
         description = "前方对象状态突变，近距离障碍物进入自车行驶空间"
         outcome = "自车前方出现紧急障碍"
-        object_type = "road_obstacle"
+        carla_plan = road_obstacle_intrusion_plan()
+
+    carla_plan["scenario_type"] = scenario_type
 
     return {
         "level": "L3",
@@ -119,22 +233,7 @@ def fallback_plan_for_event(event, index):
         "parent_l2_trigger": trigger,
         "chain_description": description,
         "direct_physical_outcome": outcome,
-        "carla_plan": {
-            "scenario_type": scenario_type,
-            "target_actor": "front_truck",
-            "object_type": object_type,
-            "trigger_frame": 45,
-            "spawn_relative_to": "front_truck",
-            "initial_position": {"x": -3.2, "y": 0.0, "z": 2.4},
-            "motion": {
-                "mode": "scripted_projectile",
-                "direction": "toward_ego",
-                "back_speed_mps": 8.0,
-                "lateral_drift_mps": 0.2,
-                "gravity": True,
-            },
-            "expected_visual_result": "风险物体或前车动作出现在自车前方近距离区域",
-        },
+        "carla_plan": carla_plan,
     }
 
 
@@ -153,6 +252,7 @@ def normalize_output(parsed, l2_data, source_l2_file):
             chain.setdefault("level", "L3")
             chain.setdefault("id", f"L3-{idx}")
             chain.setdefault("carla_plan", fallback_plan_for_event({}, idx)["carla_plan"])
+            chain["carla_plan"] = sanitize_carla_plan(chain.get("carla_plan"))
             normalized.append(chain)
 
     events = trigger_events_from_data(l2_data)[:10]

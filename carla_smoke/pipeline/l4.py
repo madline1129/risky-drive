@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import textwrap
 
 REPAIR_ATTEMPTS = 3
 
@@ -44,22 +45,95 @@ def select_chain(chains_data, index):
     return chains[index]
 
 
+def normalize_l4_plan(plan):
+    if not isinstance(plan, dict):
+        plan = {}
+    plan = dict(plan)
+    scenario_type = plan.get("scenario_type")
+    if scenario_type not in {
+        "cargo_drop",
+        "front_vehicle_brake",
+        "vulnerable_actor_intrusion",
+        "road_obstacle_intrusion",
+    }:
+        scenario_type = "road_obstacle_intrusion"
+    trigger_frame = int(plan.get("trigger_frame", 45) or 45)
+
+    if scenario_type == "front_vehicle_brake":
+        return {
+            "scenario_type": scenario_type,
+            "target_actor": plan.get("target_actor", "front_vehicle"),
+            "trigger_frame": trigger_frame,
+            "brake_intensity": float(plan.get("brake_intensity", 1.0)),
+            "deceleration_mps2": float(plan.get("deceleration_mps2", 6.0)),
+            "target_speed_mps": float(plan.get("target_speed_mps", 0.0)),
+            "expected_visual_result": plan.get(
+                "expected_visual_result",
+                "前车在自车前方突然减速或接近停止，自车前向距离快速压缩",
+            ),
+        }
+
+    if scenario_type == "vulnerable_actor_intrusion":
+        return {
+            "scenario_type": scenario_type,
+            "actor_type": plan.get("actor_type", "walker"),
+            "trigger_frame": trigger_frame,
+            "spawn_relative_to": plan.get("spawn_relative_to", "ego_lane_right"),
+            "start_position": plan.get("start_position", {"x": 18.0, "y": 4.0, "z": 0.2}),
+            "crossing_direction": plan.get("crossing_direction", "right_to_left"),
+            "speed_mps": float(plan.get("speed_mps", 2.2)),
+            "expected_visual_result": plan.get(
+                "expected_visual_result",
+                "弱势交通参与者从侧前方侵入自车行驶空间",
+            ),
+        }
+
+    if scenario_type == "cargo_drop":
+        return {
+            "scenario_type": scenario_type,
+            "target_actor": plan.get("target_actor", "front_truck"),
+            "object_type": plan.get("object_type", "metal_pipe"),
+            "object_count": int(plan.get("object_count", 5)),
+            "trigger_frame": trigger_frame,
+            "spawn_relative_to": plan.get("spawn_relative_to", "front_truck"),
+            "initial_position": plan.get("initial_position", {"x": -3.2, "y": 0.0, "z": 2.4}),
+            "motion": plan.get(
+                "motion",
+                {
+                    "mode": "scripted_projectile",
+                    "direction": "toward_ego",
+                    "back_speed_mps": 8.0,
+                    "lateral_drift_mps": 0.2,
+                    "gravity": True,
+                },
+            ),
+            "expected_visual_result": plan.get(
+                "expected_visual_result",
+                "货物/障碍物从前方车辆后部进入自车前方区域",
+            ),
+        }
+
+    return {
+        "scenario_type": "road_obstacle_intrusion",
+        "object_type": plan.get("object_type", "road_obstacle"),
+        "trigger_frame": trigger_frame,
+        "spawn_relative_to": plan.get("spawn_relative_to", "front_of_ego"),
+        "initial_position": plan.get("initial_position", {"x": 14.0, "y": 0.0, "z": 0.4}),
+        "motion": plan.get(
+            "motion",
+            {
+                "mode": "static_or_slow_intrusion",
+                "direction": "into_ego_lane",
+                "lateral_drift_mps": 0.5,
+                "gravity": False,
+            },
+        ),
+        "expected_visual_result": plan.get("expected_visual_result", "障碍物出现在自车前方车道内"),
+    }
+
+
 def build_config(chain):
-    plan = chain.get("carla_plan", {})
-    plan.setdefault("scenario_type", "cargo_drop")
-    plan.setdefault("object_type", "metal_pipe")
-    plan.setdefault("trigger_frame", 45)
-    plan.setdefault("initial_position", {"x": -3.2, "y": 0.0, "z": 2.4})
-    plan.setdefault(
-        "motion",
-        {
-            "mode": "scripted_projectile",
-            "direction": "toward_ego",
-            "back_speed_mps": 8.0,
-            "lateral_drift_mps": 0.2,
-            "gravity": True,
-        },
-    )
+    plan = normalize_l4_plan(chain.get("carla_plan", {}))
     return {
         "level": "L4",
         "name": "CARLA代码执行",
@@ -107,21 +181,115 @@ def copy_tree_contents(src_dir, dst_dir):
 
 
 def seed_generated_script(reference_path, output_script):
-    with open(reference_path, "r", encoding="utf-8") as f:
-        script = f.read()
-    config_arg = 'parser.add_argument("--config", required=True)'
-    if config_arg not in script:
-        raise RuntimeError(f"Reference executor config argument pattern changed: {reference_path}")
-    script = script.replace(
-        config_arg,
-        (
-            'parser.add_argument("--config", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), '
-            '"scenario_config.json"))'
-        ),
-    )
-    script = script.replace(
-        '"""Execute a simple CARLA risk event from a generated L4 scenario config."""',
-        '"""Generated CARLA risk scene script seeded from the ChatScene L4 reference executor."""',
+    if not os.path.exists(reference_path):
+        raise RuntimeError(f"Reference executor not found: {reference_path}")
+    script = textwrap.dedent(
+        '''\
+        #!/usr/bin/env python3
+        """Neutral seed for an opencode-generated CARLA risk scene script."""
+
+        import argparse
+        import glob
+        import json
+        import os
+        import queue
+        import sys
+        import time
+
+
+        def add_carla_python_api(carla_root):
+            candidates = [
+                os.path.join(carla_root, "PythonAPI", "carla"),
+                os.path.join(carla_root, "PythonAPI", "carla", "agents"),
+            ]
+            candidates.extend(glob.glob(os.path.join(carla_root, "PythonAPI", "carla", "dist", "carla-*.egg")))
+            candidates.extend(glob.glob(os.path.join(carla_root, "PythonAPI", "carla", "dist", "carla-*.whl")))
+            for path in candidates:
+                if os.path.exists(path) and path not in sys.path:
+                    sys.path.insert(0, path)
+
+
+        def import_carla(carla_root):
+            try:
+                import carla
+                return carla
+            except ImportError:
+                add_carla_python_api(carla_root)
+                import carla
+                return carla
+
+
+        def load_config(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+
+
+        def first_blueprint(blueprints, patterns):
+            for pattern in patterns:
+                matches = list(blueprints.filter(pattern))
+                if matches:
+                    return matches[0]
+            raise RuntimeError(f"No blueprint found for patterns: {patterns}")
+
+
+        def parse_args():
+            default_config = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scenario_config.json")
+            parser = argparse.ArgumentParser(description="Execute a generated CARLA risk event and save front-camera images.")
+            parser.add_argument("--config", default=default_config)
+            parser.add_argument("--carla-root", default="/mnt/data2/congfeng/carla915")
+            parser.add_argument("--host", default="127.0.0.1")
+            parser.add_argument("--port", type=int, default=2000)
+            parser.add_argument("--timeout", type=float, default=60.0)
+            parser.add_argument("--town", default="Town03")
+            parser.add_argument("--output-dir", required=True)
+            parser.add_argument("--frames", type=int, default=140)
+            parser.add_argument("--save-every", type=int, default=5)
+            parser.add_argument("--target-speed", type=float, default=5.0)
+            return parser.parse_args()
+
+
+        def main():
+            args = parse_args()
+            config = load_config(args.config)
+            plan = config.get("carla_plan", {})
+            scenario_type = plan.get("scenario_type", "unknown")
+
+            os.makedirs(args.output_dir, exist_ok=True)
+            carla = import_carla(args.carla_root)
+            client = carla.Client(args.host, args.port)
+            client.set_timeout(args.timeout)
+
+            world = None
+            original_settings = None
+            actors = []
+            image_queue = queue.Queue()
+
+            try:
+                world = client.load_world(args.town) if args.town else client.get_world()
+                original_settings = world.get_settings()
+                settings = world.get_settings()
+                settings.synchronous_mode = True
+                settings.fixed_delta_seconds = 0.05
+                world.apply_settings(settings)
+
+                raise NotImplementedError(
+                    f"OpenCode must implement scenario_type={scenario_type!r} according to scenario_config.json"
+                )
+            finally:
+                for actor in reversed(actors):
+                    try:
+                        if actor.is_alive:
+                            actor.destroy()
+                    except RuntimeError:
+                        pass
+                if world is not None and original_settings is not None:
+                    world.apply_settings(original_settings)
+                time.sleep(0.5)
+
+
+        if __name__ == "__main__":
+            raise SystemExit(main())
+        '''
     )
     with open(output_script, "w", encoding="utf-8") as f:
         f.write(script)
@@ -174,15 +342,20 @@ def opencode_prompt(config_path, output_script):
 Task:
 - Read the L4 scenario config at:
   {config_path}
-- Read reference_executor.py and the files under context/.
-- Edit the seeded Python script in place at exactly:
+- Read reference_executor.py and the files under context/. Use reference_executor.py for CARLA mechanics only, not as an event template.
+- Edit the neutral seeded Python script in place at exactly:
   {output_script}
+- Replace the NotImplementedError with scenario-specific behavior from scenario_config.json.
 - The script must connect to CARLA 0.9.15, spawn an ego vehicle, a front truck, and execute the requested risk event from carla_plan.
 - Save front-camera images into the --output-dir argument as risk_rgb_XXXX.png.
 - Keep the script self-contained. Do not require project imports.
 - Support these CLI arguments: --carla-root, --host, --port, --town, --output-dir, --frames, --save-every.
 - Use synchronous mode and restore original world settings in finally.
-- For cargo_drop or unknown scenario types, implement a scripted projectile/drop from the rear of the front truck toward the ego lane.
+- Respect carla_plan.scenario_type exactly. Do not combine unrelated actions across scenario types.
+- For front_vehicle_brake, implement only front-vehicle braking/deceleration. Do not spawn payloads or metal pipes unless the config explicitly uses cargo_drop.
+- For cargo_drop, implement payload/drop motion from the configured object and motion fields.
+- For vulnerable_actor_intrusion, implement a walker/cyclist intrusion using actor_type and crossing fields.
+- For road_obstacle_intrusion, implement a static or slow obstacle entering the ego lane.
 - Import CARLA safely: add CARLA PythonAPI paths first, then import carla inside main or a helper and return the module.
 - Do not reference a global carla variable before importing it. Avoid patterns like "if carla is None" inside a function that also imports carla.
 - Before finishing, make sure the script would pass "python -m py_compile".
@@ -299,6 +472,10 @@ def error_output_from_exception(exc):
 def validate_generated_script(script_path):
     run_command([sys.executable, "-m", "py_compile", script_path], capture_output=True)
     run_command([sys.executable, script_path, "--help"], capture_output=True)
+    with open(script_path, "r", encoding="utf-8") as f:
+        script = f.read()
+    if "NotImplementedError" in script:
+        raise RuntimeError("generated script still contains the neutral seed NotImplementedError")
 
 
 def repair_then_validate(args, config_path, script_path, error_output):
@@ -311,7 +488,7 @@ def repair_then_validate(args, config_path, script_path, error_output):
         try:
             validate_generated_script(script_path)
             return
-        except subprocess.CalledProcessError as exc:
+        except (subprocess.CalledProcessError, RuntimeError) as exc:
             last_error = error_output_from_exception(exc)
             if attempt == args.opencode_repair_attempts:
                 raise
@@ -390,7 +567,7 @@ def main():
         write_json(config_path, config)
         try:
             validate_generated_script(generated_script)
-        except subprocess.CalledProcessError as exc:
+        except (subprocess.CalledProcessError, RuntimeError) as exc:
             print("\nGenerated script failed local validation.")
             repair_then_validate(args, config_path, generated_script, error_output_from_exception(exc))
         run_generated_script_with_repair(args, config_path, generated_script, images_dir)
