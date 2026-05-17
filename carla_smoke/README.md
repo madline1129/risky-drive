@@ -131,6 +131,16 @@ python carla_smoke/pipeline/run.py \
   --opencode-model deepseek/deepseek-v4-pro
 ```
 
-In this mode, `pipeline/l4.py` calls `opencode run`, expects it to create `l4/opencode_workspace/generated_risk_scene.py`, and then executes that generated script to produce `l4/risk_images/`.
+In this mode, `pipeline/l4.py` creates `l4/opencode_workspace/`, copies reusable skills from `carla_smoke/opencode_skills/` into `.opencode/skills/`, seeds `generated_risk_scene.py` from the reference executor, and calls `opencode run` to edit that script in place. The pipeline then validates the script with `py_compile` and `--help`, allows up to three opencode repair attempts, and executes the generated script to produce `l4/risk_images/`.
+
+The opencode workspace contains:
+
+- `.opencode/skills/l4-carla-codegen/`
+- `AGENTS.md`
+- `scenario_config.json`
+- `reference_executor.py`
+- `generated_risk_scene.py`
+- `context/`
+- `opencode_prompt.txt`
 
 `vision/observations.json` contains Qwen's visual observations. It is auxiliary evidence for DeepSeek; CARLA API state remains the source of truth for distances, speeds, and actor identities.

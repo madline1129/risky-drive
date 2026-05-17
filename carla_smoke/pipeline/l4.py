@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 
+REPAIR_ATTEMPTS = 3
+
 
 def read_json(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -23,6 +25,14 @@ def write_json(path, data):
 
 def repo_root_from_this_file():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def opencode_skills_dir():
+    return os.path.join(repo_root_from_this_file(), "carla_smoke", "opencode_skills")
+
+
+def reference_executor_path():
+    return os.path.join(repo_root_from_this_file(), "carla_smoke", "scenes", "risk_event_scene.py")
 
 
 def select_chain(chains_data, index):
@@ -83,13 +93,89 @@ def run_command(command, capture_output=False):
     return ""
 
 
+def copy_tree_contents(src_dir, dst_dir):
+    if not os.path.isdir(src_dir):
+        raise RuntimeError(f"Required directory not found: {src_dir}")
+    os.makedirs(dst_dir, exist_ok=True)
+    for name in os.listdir(src_dir):
+        src = os.path.join(src_dir, name)
+        dst = os.path.join(dst_dir, name)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, dst)
+
+
+def seed_generated_script(reference_path, output_script):
+    with open(reference_path, "r", encoding="utf-8") as f:
+        script = f.read()
+    config_arg = 'parser.add_argument("--config", required=True)'
+    if config_arg not in script:
+        raise RuntimeError(f"Reference executor config argument pattern changed: {reference_path}")
+    script = script.replace(
+        config_arg,
+        (
+            'parser.add_argument("--config", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), '
+            '"scenario_config.json"))'
+        ),
+    )
+    script = script.replace(
+        '"""Execute a simple CARLA risk event from a generated L4 scenario config."""',
+        '"""Generated CARLA risk scene script seeded from the ChatScene L4 reference executor."""',
+    )
+    with open(output_script, "w", encoding="utf-8") as f:
+        f.write(script)
+
+
+def prepare_opencode_workspace(args, config_path):
+    workspace = os.path.join(args.output_dir, "opencode_workspace")
+    os.makedirs(workspace, exist_ok=True)
+
+    workspace_config = os.path.join(workspace, "scenario_config.json")
+    shutil.copyfile(config_path, workspace_config)
+
+    output_script = os.path.join(workspace, "generated_risk_scene.py")
+    reference_path = reference_executor_path()
+    shutil.copyfile(reference_path, os.path.join(workspace, "reference_executor.py"))
+    seed_generated_script(reference_path, output_script)
+
+    workspace_skills = os.path.join(workspace, ".opencode", "skills")
+    copy_tree_contents(opencode_skills_dir(), workspace_skills)
+
+    skill_references = os.path.join(workspace_skills, "l4-carla-codegen", "references")
+    context_dir = os.path.join(workspace, "context")
+    copy_tree_contents(skill_references, context_dir)
+
+    agents_path = os.path.join(workspace, "AGENTS.md")
+    with open(agents_path, "w", encoding="utf-8") as f:
+        f.write(
+            "# OpenCode Workspace Instructions\n\n"
+            "Use the `l4-carla-codegen` skill for this workspace.\n"
+            "Edit only `generated_risk_scene.py` unless explicitly asked otherwise.\n"
+            "Read `scenario_config.json`, `reference_executor.py`, and the files under `context/` before editing.\n"
+            "Keep the generated script self-contained and compatible with the L4 pipeline CLI.\n"
+        )
+
+    write_json(
+        os.path.join(workspace, "opencode_inputs.json"),
+        {
+            "config_path": os.path.abspath(config_path),
+            "workspace_config": workspace_config,
+            "output_script": output_script,
+            "skill": "l4-carla-codegen",
+        },
+    )
+    return workspace, workspace_config, output_script
+
+
 def opencode_prompt(config_path, output_script):
-    return f"""You are the L4 code agent for a CARLA risk-scenario pipeline.
+    return f"""Use the l4-carla-codegen skill.
 
 Task:
 - Read the L4 scenario config at:
   {config_path}
-- Generate a complete executable Python script at exactly:
+- Read reference_executor.py and the files under context/.
+- Edit the seeded Python script in place at exactly:
   {output_script}
 - The script must connect to CARLA 0.9.15, spawn an ego vehicle, a front truck, and execute the requested risk event from carla_plan.
 - Save front-camera images into the --output-dir argument as risk_rgb_XXXX.png.
@@ -100,7 +186,7 @@ Task:
 - Import CARLA safely: add CARLA PythonAPI paths first, then import carla inside main or a helper and return the module.
 - Do not reference a global carla variable before importing it. Avoid patterns like "if carla is None" inside a function that also imports carla.
 - Before finishing, make sure the script would pass "python -m py_compile".
-- Use deterministic code. Do not ask questions. Do not write Markdown. Edit/create only the requested Python file.
+- Use deterministic code. Do not ask questions. Do not write Markdown. Edit only the requested Python file.
 
 The generated script will be executed by this pipeline after opencode exits.
 """
@@ -108,6 +194,8 @@ The generated script will be executed by this pipeline after opencode exits.
 
 def opencode_repair_prompt(config_path, output_script, error_output):
     return f"""The generated CARLA script failed when executed.
+
+Use the l4-carla-codegen skill.
 
 Scenario config:
   {config_path}
@@ -120,6 +208,7 @@ Execution error:
 
 Edit the existing script in place. Keep the same CLI arguments and output behavior.
 Fix the root cause, especially CARLA import/scope errors such as UnboundLocalError from referencing carla before import.
+Read reference_executor.py, context/known_failures.md, and the current generated_risk_scene.py before editing.
 Do not write Markdown. Do not ask questions. Only modify the Python script.
 """
 
@@ -132,21 +221,9 @@ def run_opencode(args, config_path):
             "then rerun with --code-agent opencode."
         )
 
-    workspace = os.path.join(args.output_dir, "opencode_workspace")
-    os.makedirs(workspace, exist_ok=True)
-    workspace_config = os.path.join(workspace, "scenario_config.json")
-    shutil.copyfile(config_path, workspace_config)
-    output_script = os.path.join(workspace, "generated_risk_scene.py")
+    workspace, workspace_config, output_script = prepare_opencode_workspace(args, config_path)
     prompt = opencode_prompt(workspace_config, output_script)
     prompt_path = os.path.join(workspace, "opencode_prompt.txt")
-    write_json(
-        os.path.join(workspace, "opencode_inputs.json"),
-        {
-            "config_path": os.path.abspath(config_path),
-            "workspace_config": workspace_config,
-            "output_script": output_script,
-        },
-    )
     with open(prompt_path, "w", encoding="utf-8") as f:
         f.write(prompt)
 
@@ -215,6 +292,45 @@ def run_generated_script(args, script_path, images_dir):
     return run_command(command, capture_output=True)
 
 
+def error_output_from_exception(exc):
+    return getattr(exc, "output", None) or getattr(exc, "stdout", None) or getattr(exc, "stderr", None) or str(exc)
+
+
+def validate_generated_script(script_path):
+    run_command([sys.executable, "-m", "py_compile", script_path], capture_output=True)
+    run_command([sys.executable, script_path, "--help"], capture_output=True)
+
+
+def repair_then_validate(args, config_path, script_path, error_output):
+    if args.opencode_repair_attempts <= 0:
+        raise RuntimeError(error_output)
+    last_error = error_output
+    for attempt in range(1, args.opencode_repair_attempts + 1):
+        print(f"\nAsking opencode to repair generated script ({attempt}/{args.opencode_repair_attempts}).")
+        repair_generated_script(args, config_path, script_path, last_error)
+        try:
+            validate_generated_script(script_path)
+            return
+        except subprocess.CalledProcessError as exc:
+            last_error = error_output_from_exception(exc)
+            if attempt == args.opencode_repair_attempts:
+                raise
+
+
+def run_generated_script_with_repair(args, config_path, script_path, images_dir):
+    last_error = ""
+    for attempt in range(0, args.opencode_repair_attempts + 1):
+        try:
+            return run_generated_script(args, script_path, images_dir)
+        except subprocess.CalledProcessError as exc:
+            last_error = error_output_from_exception(exc)
+            if attempt == args.opencode_repair_attempts:
+                raise
+            print("\nGenerated script failed during CARLA execution.")
+            repair_then_validate(args, config_path, script_path, last_error)
+    raise RuntimeError(last_error)
+
+
 def main():
     parser = argparse.ArgumentParser(description="L4 code-agent: generate and optionally execute CARLA risk-scene code.")
     parser.add_argument("l3_json", help="Path to l3/chains.json.")
@@ -230,6 +346,7 @@ def main():
     parser.add_argument("--code-agent", choices=["template", "opencode"], default="opencode")
     parser.add_argument("--opencode-bin", default="opencode")
     parser.add_argument("--opencode-model", default="deepseek/deepseek-v4-pro")
+    parser.add_argument("--opencode-repair-attempts", type=int, default=REPAIR_ATTEMPTS)
     args = parser.parse_args()
 
     chains_data = read_json(args.l3_json)
@@ -272,12 +389,11 @@ def main():
         config["generated_script"] = generated_script
         write_json(config_path, config)
         try:
-            run_generated_script(args, generated_script, images_dir)
+            validate_generated_script(generated_script)
         except subprocess.CalledProcessError as exc:
-            error_output = exc.output or str(exc)
-            print("\nGenerated script failed. Asking opencode to repair it once.")
-            repair_generated_script(args, config_path, generated_script, error_output)
-            run_generated_script(args, generated_script, images_dir)
+            print("\nGenerated script failed local validation.")
+            repair_then_validate(args, config_path, generated_script, error_output_from_exception(exc))
+        run_generated_script_with_repair(args, config_path, generated_script, images_dir)
     else:
         print("L4 execution skipped. Add --execute to run CARLA and save risk images.")
 
