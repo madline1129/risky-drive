@@ -12,6 +12,7 @@ Shared fields:
 - `scene_reconstruction`: compact L0 state used to rebuild the original scene context.
 - `source_l0_state_file`: original L0 state path when provided.
 - `reconstruction_policy`: requirements for preserving the L0 scene identity.
+- `event_contract`: required per-chain event trace output. Treat this as a hard acceptance contract.
 
 When `scene_reconstruction` is present, use it before generic spawn points:
 
@@ -20,6 +21,13 @@ When `scene_reconstruction` is present, use it before generic spawn points:
 - `scene_reconstruction.weather`: weather to apply.
 - `scene_reconstruction.nearest_front_actor`: actor to recreate for front-vehicle events.
 - `scene_reconstruction.actors`: relevant nearby actors to optionally recreate.
+
+Event trace:
+
+- Write `event_trace.json` under `--output-dir`.
+- `event_trace.scenario_type` must match `carla_plan.scenario_type`.
+- `event_trace.frames` must record the event-specific physical state over time.
+- Use `event_contract.required_frame_fields` to choose per-frame keys.
 
 Scenario-specific fields:
 

@@ -17,16 +17,18 @@ Use this skill when asked to create or fix `generated_risk_scene.py` for the Cha
 6. Preserve these CLI arguments: `--carla-root`, `--host`, `--port`, `--town`, `--output-dir`, `--frames`, `--save-every`.
 7. The script must default to reading `scenario_config.json` from its own directory.
 8. Save front camera frames as `risk_rgb_XXXX.png` in `--output-dir`.
-9. Use CARLA synchronous mode with `fixed_delta_seconds = 0.05`, and restore original world settings in `finally`.
-10. Destroy all spawned actors in reverse order in `finally`.
-11. Before finishing, make sure the script would pass `python -m py_compile generated_risk_scene.py` and `python generated_risk_scene.py --help`.
-12. Replace any seed `NotImplementedError` with the exact scenario behavior requested by `carla_plan.scenario_type`.
+9. Write `event_trace.json` in `--output-dir` according to `scenario_config.event_contract`.
+10. Use CARLA synchronous mode with `fixed_delta_seconds = 0.05`, and restore original world settings in `finally`.
+11. Destroy all spawned actors in reverse order in `finally`.
+12. Before finishing, make sure the script would pass `python -m py_compile generated_risk_scene.py` and `python generated_risk_scene.py --help`.
+13. Replace any seed `NotImplementedError` with the exact scenario behavior requested by `carla_plan.scenario_type`.
 
 ## Guardrails
 
 - Import CARLA through a helper that adds PythonAPI egg/whl paths before `import carla`.
 - Do not reference a global `carla` variable before importing it.
 - Respect `carla_plan.scenario_type` exactly. Do not merge unrelated event types.
+- Use `event_contract` as a hard acceptance contract. The script must execute that event and record trace fields proving it.
 - Preserve the L0 scene identity where possible: use the L0 map, weather, ego transform, actor types, relative distances, and lane relationships.
 - If a L0 transform is occupied, move minimally along the lane or upward in z; do not switch to an unrelated map region.
 - For `front_vehicle_brake`, do not spawn payloads, metal pipes, or projectile objects.
@@ -40,5 +42,6 @@ Use this skill when asked to create or fix `generated_risk_scene.py` for the Cha
 
 - `context/config_schema.md`: meaning of the L4 config fields.
 - `context/l0_scene_reconstruction.md`: how to rebuild the L4 scene from L0 state.
+- `context/event_contract.md`: required per-chain trace output and semantic acceptance checks.
 - `context/carla_recipes.md`: stable CARLA implementation patterns.
 - `context/known_failures.md`: common generated-script failures and fixes.

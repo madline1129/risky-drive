@@ -177,6 +177,63 @@ def normalize_l4_plan(plan):
     }
 
 
+def build_event_contract(plan):
+    scenario_type = plan.get("scenario_type", "unknown")
+    base = {
+        "scenario_type": scenario_type,
+        "trace_file": "event_trace.json",
+        "trace_location": "write to --output-dir/event_trace.json",
+        "required_top_level_fields": ["scenario_type", "trigger_frame", "frames", "event_applied"],
+        "purpose": "Prove that this L4 run executed the selected chain-specific physical event, not only the shared L0 reconstruction.",
+    }
+    if scenario_type == "front_vehicle_brake":
+        base.update(
+            {
+                "event_applied": "front actor braking/deceleration after trigger_frame",
+                "required_frame_fields": ["frame", "ego_speed_mps", "front_actor_speed_mps", "front_distance_m"],
+                "success_condition": "front_actor_speed_mps decreases after trigger_frame and front_distance_m changes over time",
+                "forbidden": ["payload actors", "metal_pipe", "scripted projectile/drop unless scenario_type is cargo_drop"],
+            }
+        )
+    elif scenario_type == "cargo_drop":
+        base.update(
+            {
+                "event_applied": "configured payload/obstacle leaves the front actor and enters/approaches the ego lane",
+                "required_frame_fields": ["frame", "ego_speed_mps", "payload_count", "payload_positions"],
+                "success_condition": "payload_count > 0 and payload_positions change after trigger_frame",
+                "forbidden": ["front-vehicle braking as the primary event unless explicitly configured"],
+            }
+        )
+    elif scenario_type == "vulnerable_actor_intrusion":
+        base.update(
+            {
+                "event_applied": "configured walker/cyclist moves into ego driving space",
+                "required_frame_fields": ["frame", "ego_speed_mps", "vulnerable_actor_position", "distance_to_ego_m"],
+                "success_condition": "vulnerable actor position changes toward/through ego lane after trigger_frame",
+                "forbidden": ["payload actors", "metal_pipe", "front-vehicle braking as the primary event"],
+            }
+        )
+    elif scenario_type == "road_obstacle_intrusion":
+        base.update(
+            {
+                "event_applied": "configured road obstacle appears or moves into ego lane",
+                "required_frame_fields": ["frame", "ego_speed_mps", "obstacle_positions"],
+                "success_condition": "obstacle is visible/placed in ego path after trigger_frame",
+                "forbidden": ["metal_pipe cargo drop unless object_type requests it", "front-vehicle braking as the primary event"],
+            }
+        )
+    else:
+        base.update(
+            {
+                "event_applied": "scenario-specific event from carla_plan",
+                "required_frame_fields": ["frame", "ego_speed_mps"],
+                "success_condition": "trace must show a chain-specific physical state change after trigger_frame",
+                "forbidden": ["unrelated template event"],
+            }
+        )
+    return base
+
+
 def build_config(chain, l0_state=None, l0_json_path=None):
     plan = normalize_l4_plan(chain.get("carla_plan", {}))
     scene_reconstruction = compact_l0_scene(l0_state)
@@ -192,6 +249,7 @@ def build_config(chain, l0_state=None, l0_json_path=None):
         "truck_distance": 18.0,
         "trigger_frame": plan.get("trigger_frame", 45),
         "carla_plan": plan,
+        "event_contract": build_event_contract(plan),
         "scene_reconstruction": scene_reconstruction,
         "reconstruction_policy": {
             "base_scene": "Reconstruct the L4 risk scene from L0 state instead of choosing unrelated spawn points.",
@@ -411,6 +469,7 @@ Task:
 - Do not choose an unrelated spawn point when L0 ego.location/rotation is available.
 - The script must connect to CARLA 0.9.15, reconstruct the L0 ego/front/relevant actors, and execute the requested risk event from carla_plan.
 - Save front-camera images into the --output-dir argument as risk_rgb_XXXX.png.
+- Write --output-dir/event_trace.json exactly as required by scenario_config.event_contract. The trace must prove that this chain's physical event was applied.
 - Keep the script self-contained. Do not require project imports.
 - Support these CLI arguments: --carla-root, --host, --port, --town, --output-dir, --frames, --save-every.
 - Use synchronous mode and restore original world settings in finally.
@@ -444,6 +503,7 @@ Execution error:
 
 Edit the existing script in place. Keep the same CLI arguments and output behavior.
 Fix the root cause, especially CARLA import/scope errors such as UnboundLocalError from referencing carla before import.
+If the failure mentions event_trace, implement or fix --output-dir/event_trace.json according to scenario_config.event_contract.
 Read reference_executor.py, context/known_failures.md, and the current generated_risk_scene.py before editing.
 Do not write Markdown. Do not ask questions. Only modify the Python script.
 """
@@ -528,6 +588,16 @@ def run_generated_script(args, script_path, images_dir):
     return run_command(command, capture_output=True)
 
 
+def clean_l4_outputs(images_dir):
+    os.makedirs(images_dir, exist_ok=True)
+    for name in os.listdir(images_dir):
+        if name.startswith("risk_rgb_") and name.lower().endswith(".png"):
+            os.remove(os.path.join(images_dir, name))
+    trace_path = os.path.join(images_dir, "event_trace.json")
+    if os.path.exists(trace_path):
+        os.remove(trace_path)
+
+
 def error_output_from_exception(exc):
     return getattr(exc, "output", None) or getattr(exc, "stdout", None) or getattr(exc, "stderr", None) or str(exc)
 
@@ -539,6 +609,29 @@ def validate_generated_script(script_path):
         script = f.read()
     if "NotImplementedError" in script:
         raise RuntimeError("generated script still contains the neutral seed NotImplementedError")
+
+
+def validate_event_trace(config_path, images_dir):
+    config = read_json(config_path)
+    contract = config.get("event_contract", {})
+    trace_path = os.path.join(images_dir, contract.get("trace_file", "event_trace.json"))
+    if not os.path.exists(trace_path):
+        raise RuntimeError(
+            f"generated script did not write required event trace: {trace_path}. "
+            "Write --output-dir/event_trace.json with scenario_type, trigger_frame, frames, and event_applied."
+        )
+    trace = read_json(trace_path)
+    expected_type = config.get("carla_plan", {}).get("scenario_type")
+    if trace.get("scenario_type") != expected_type:
+        raise RuntimeError(
+            f"event_trace scenario_type mismatch: expected {expected_type!r}, got {trace.get('scenario_type')!r}"
+        )
+    frames = trace.get("frames")
+    if not isinstance(frames, list) or not frames:
+        raise RuntimeError("event_trace.frames must be a non-empty list of per-frame event state.")
+    if not trace.get("event_applied"):
+        raise RuntimeError("event_trace.event_applied must describe the chain-specific event that was executed.")
+    return trace_path
 
 
 def repair_then_validate(args, config_path, script_path, error_output):
@@ -561,8 +654,11 @@ def run_generated_script_with_repair(args, config_path, script_path, images_dir)
     last_error = ""
     for attempt in range(0, args.opencode_repair_attempts + 1):
         try:
-            return run_generated_script(args, script_path, images_dir)
-        except subprocess.CalledProcessError as exc:
+            run_generated_script(args, script_path, images_dir)
+            trace_path = validate_event_trace(config_path, images_dir)
+            print(f"Validated event trace: {os.path.abspath(trace_path)}")
+            return
+        except (subprocess.CalledProcessError, RuntimeError) as exc:
             last_error = error_output_from_exception(exc)
             if attempt == args.opencode_repair_attempts:
                 raise
@@ -578,6 +674,7 @@ def execute_chain(args, chain, l0_state, chain_dir):
     os.makedirs(chain_dir, exist_ok=True)
     config_path = os.path.join(chain_dir, "scenario_config.json")
     images_dir = os.path.join(chain_dir, "risk_images")
+    clean_l4_outputs(images_dir)
     write_json(config_path, config)
     print(f"Saved L4 scenario config: {os.path.abspath(config_path)}")
 
