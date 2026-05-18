@@ -13,6 +13,49 @@ import sys
 import time
 
 
+def check_scenic_python_deps():
+    missing = []
+    for module_name, package_name in [
+        ("dotmap", "dotmap~=1.3"),
+        ("antlr4", "antlr4-python3-runtime~=4.11"),
+        ("mapbox_earcut", "mapbox_earcut>=0.12.10"),
+    ]:
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing.append(package_name)
+
+    if missing:
+        raise RuntimeError(
+            "Missing Scenic Python dependencies: "
+            + ", ".join(missing)
+            + ". Install Scenic dependencies with: cd Scenic && python -m pip install -e ."
+        )
+
+    try:
+        import decorator
+    except ImportError as exc:
+        raise RuntimeError(
+            "Missing Python package 'decorator'. Install the ChatScene/Scenic dependency with: "
+            "pip install decorator==5.1.1"
+        ) from exc
+
+    try:
+        import inspect
+
+        signature = inspect.signature(decorator.decorate)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("Could not inspect decorator.decorate; reinstall with: pip install decorator==5.1.1") from exc
+
+    if "kwsyntax" not in signature.parameters:
+        version = getattr(decorator, "__version__", "unknown")
+        raise RuntimeError(
+            "Incompatible 'decorator' package for Scenic: "
+            f"version {version!r} has no decorate(..., kwsyntax=...) support. "
+            "Fix the chatscene environment with: pip install decorator==5.1.1"
+        )
+
+
 def repo_root_from_this_file():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -24,16 +67,49 @@ def add_repo_paths(repo_root):
             sys.path.insert(0, path)
 
 
-def add_carla_python_api(carla_root):
+def carla_python_api_candidates(carla_root):
     candidates = [
         os.path.join(carla_root, "PythonAPI", "carla"),
         os.path.join(carla_root, "PythonAPI", "carla", "agents"),
     ]
     candidates.extend(glob.glob(os.path.join(carla_root, "PythonAPI", "carla", "dist", "carla-*.egg")))
     candidates.extend(glob.glob(os.path.join(carla_root, "PythonAPI", "carla", "dist", "carla-*.whl")))
+    return candidates
+
+
+def add_carla_python_api(carla_root):
+    candidates = carla_python_api_candidates(carla_root)
     for path in candidates:
         if os.path.exists(path) and path not in sys.path:
             sys.path.insert(0, path)
+    return candidates
+
+
+def import_carla_from_root(carla_root):
+    candidates = add_carla_python_api(carla_root)
+    try:
+        import carla
+
+        return carla
+    except ImportError as exc:
+        existing = [path for path in candidates if os.path.exists(path)]
+        message = [
+            "Could not import the CARLA Python API before loading Scenic.",
+            f"carla_root: {carla_root}",
+            "Existing CARLA PythonAPI candidates:",
+        ]
+        if existing:
+            message.extend(f"  - {path}" for path in existing)
+        else:
+            message.append("  - none found")
+        message.extend(
+            [
+                "Fix by using the correct --carla-root or exporting PYTHONPATH to a compatible CARLA egg/whl.",
+                "Example:",
+                f"  export PYTHONPATH={carla_root}/PythonAPI/carla:{carla_root}/PythonAPI/carla/dist/carla-*.egg:$PYTHONPATH",
+            ]
+        )
+        raise RuntimeError("\n".join(message)) from exc
 
 
 def natural_key(path):
@@ -133,7 +209,8 @@ def set_ego_autopilot(ego, traffic_manager, target_speed_diff):
 def capture_safebench_scene(args):
     repo_root = repo_root_from_this_file()
     add_repo_paths(repo_root)
-    add_carla_python_api(args.carla_root)
+    check_scenic_python_deps()
+    carla = import_carla_from_root(args.carla_root)
 
     import numpy as np
     from safebench.util.scenic_utils import ScenicSimulator
@@ -190,7 +267,7 @@ def capture_safebench_scene(args):
         set_ego_autopilot(ego, traffic_manager, args.ego_speed_difference)
 
         camera = attach_front_camera(
-            __import__("carla"),
+            carla,
             world,
             ego,
             blueprints,
@@ -235,7 +312,7 @@ def capture_safebench_scene(args):
             if frame_idx % args.save_every == 0:
                 image_file = f"rgb_{frame_idx:04d}.png"
                 image.save_to_disk(os.path.join(args.output_dir, image_file))
-                snapshot = build_scene_snapshot(__import__("carla"), world, ego, frame_idx, image_file, args.state_radius)
+                snapshot = build_scene_snapshot(carla, world, ego, frame_idx, image_file, args.state_radius)
                 snapshot.setdefault("source", {})
                 snapshot["source"].update(
                     {
