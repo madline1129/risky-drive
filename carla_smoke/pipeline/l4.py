@@ -1016,7 +1016,7 @@ def main():
     parser.add_argument("--execute", action="store_true", help="Run CARLA executor to produce risk images.")
     parser.add_argument("--code-agent", choices=["template", "opencode"], default="opencode")
     parser.add_argument("--opencode-bin", default="opencode")
-    parser.add_argument("--opencode-model", default="deepseek/deepseek-v4-pro")
+    parser.add_argument("--opencode-model", default="deepseek-v4-pro")
     parser.add_argument("--opencode-repair-attempts", type=int, default=REPAIR_ATTEMPTS)
     parser.add_argument(
         "--validate-event-trace",
