@@ -32,6 +32,12 @@ Fix: write `frames` as the non-empty list of per-frame dictionaries. Do not use 
 
 ## Side-vehicle intrusion looks like an empty road or generic obstacle
 
-Cause: the script ignored `physical_task.primary_actor` and spawned an unrelated obstacle, or the lateral shift was too small to enter the ego lane band.
+Cause: the script ignored `physical_task.primary_actor` and spawned an unrelated obstacle, the lateral shift was too small to enter the ego lane band, or it saved a front-only camera even though the primary actor is beside/behind the ego.
 
-Fix: use the same L0 actor id/type from `physical_task.primary_actor`, move it toward the ego lane after trigger, and satisfy `physical_task.success_criteria`.
+Fix: use the same L0 actor id/type from `physical_task.primary_actor`, move it toward the ego lane after trigger, satisfy `physical_task.success_criteria`, and follow `physical_task.visualization` so `risk_rgb_XXXX.png` is a six-view montage which shows the side vehicle.
+
+## `risk_rgb_XXXX.png` is front-only
+
+Cause: the script used the old reference executor's single front camera pattern.
+
+Fix: attach all cameras listed in `physical_task.visualization.camera_specs`, collect all images after each tick, and save the top-level `risk_rgb_XXXX.png` as the requested 2x3 montage.

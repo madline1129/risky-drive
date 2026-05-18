@@ -25,6 +25,7 @@ Important `physical_task` fields:
 - `physical_task.action`: required motion, trigger timing, and target geometry.
 - `physical_task.success_criteria`: numeric acceptance criteria. The generated physical scene must satisfy these.
 - `physical_task.trace_schema.top_level_frames_key`: per-frame trace data must be written under this key, normally `frames`.
+- `physical_task.visualization`: required image viewpoint. By default save every top-level `risk_rgb_XXXX.png` as a six-view 2x3 ego-camera montage.
 
 When `scene_reconstruction` is present, use it before generic spawn points:
 
@@ -33,6 +34,13 @@ When `scene_reconstruction` is present, use it before generic spawn points:
 - `scene_reconstruction.weather`: weather to apply.
 - `scene_reconstruction.nearest_front_actor`: actor to recreate for front-vehicle events.
 - `scene_reconstruction.actors`: relevant nearby actors to optionally recreate.
+
+Risk images:
+
+- Save top-level `risk_rgb_XXXX.png` files as the review images.
+- When `physical_task.visualization.default_mode == "ego_surround_montage"`, attach the requested six cameras to the ego vehicle and compose a 2x3 montage.
+- Use `physical_task.visualization.tile_order` exactly. The default order is `CAM_FRONT`, `CAM_FRONT_LEFT`, `CAM_FRONT_RIGHT`, `CAM_BACK`, `CAM_BACK_LEFT`, `CAM_BACK_RIGHT`.
+- You may also save per-camera files in subdirectories, but the top-level `risk_rgb_XXXX.png` must be the montage.
 
 Event trace:
 
@@ -99,6 +107,7 @@ Only implement an existing L0 side vehicle laterally intruding toward the ego la
 - Spawn/reconstruct that actor from `physical_task.primary_actor.initial_location` and `initial_rotation`.
 - Move the same vehicle toward the ego lane after `physical_task.action.trigger_frame`.
 - The motion must satisfy `physical_task.success_criteria.relative_lateral_delta_m_min` and `min_abs_relative_lateral_m_max`.
+- The images must follow `physical_task.visualization`. For side-vehicle intrusion this means the six-view montage must show the side vehicle in at least one tile, not a front-only empty road.
 - Do not spawn a new road obstacle as the primary actor.
 - Do not implement this as front-vehicle braking, cargo drop, or a generic static obstacle.
 

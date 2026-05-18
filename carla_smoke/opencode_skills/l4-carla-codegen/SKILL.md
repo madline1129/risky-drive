@@ -17,7 +17,7 @@ Use this skill when asked to create or fix `generated_risk_scene.py` for the Cha
 6. Keep the script self-contained. Do not import project modules.
 7. Preserve these CLI arguments: `--carla-root`, `--host`, `--port`, `--town`, `--output-dir`, `--frames`, `--save-every`.
 8. The script must default to reading `scenario_config.json` from its own directory.
-9. Save front camera frames as `risk_rgb_XXXX.png` in `--output-dir`.
+9. Save risk frames as `risk_rgb_XXXX.png` in `--output-dir`. Follow `physical_task.visualization`; by default each top-level risk image must be a six-view 2x3 ego-camera montage, not a front-only camera.
 10. Write `event_trace.json` in `--output-dir` according to `scenario_config.event_contract`.
 11. Use CARLA synchronous mode with `fixed_delta_seconds = 0.05`, and restore original world settings in `finally`.
 12. Destroy all spawned actors in reverse order in `finally`.

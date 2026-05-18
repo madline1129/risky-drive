@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import struct
 
 REPAIR_ATTEMPTS = 3
 
@@ -337,6 +338,29 @@ def build_physical_task(plan, scene_reconstruction):
             "forbidden_top_level_frame_data_key": "frame_data",
             "required_common_frame_fields": ["frame", "ego_speed_mps"],
         },
+        "visualization": {
+            "output_pattern": "risk_rgb_XXXX.png",
+            "primary_actor_must_be_visible": True,
+            "default_mode": "ego_surround_montage",
+            "required_layout": "2x3",
+            "tile_order": [
+                "CAM_FRONT",
+                "CAM_FRONT_LEFT",
+                "CAM_FRONT_RIGHT",
+                "CAM_BACK",
+                "CAM_BACK_LEFT",
+                "CAM_BACK_RIGHT",
+            ],
+            "camera_specs": [
+                {"name": "CAM_FRONT", "x": 1.5, "y": 0.0, "z": 1.6, "pitch": 0.0, "yaw": 0.0, "roll": 0.0, "fov": 90.0},
+                {"name": "CAM_FRONT_LEFT", "x": 1.2, "y": -0.4, "z": 1.6, "pitch": 0.0, "yaw": -55.0, "roll": 0.0, "fov": 90.0},
+                {"name": "CAM_FRONT_RIGHT", "x": 1.2, "y": 0.4, "z": 1.6, "pitch": 0.0, "yaw": 55.0, "roll": 0.0, "fov": 90.0},
+                {"name": "CAM_BACK", "x": -1.5, "y": 0.0, "z": 1.6, "pitch": 0.0, "yaw": 180.0, "roll": 0.0, "fov": 90.0},
+                {"name": "CAM_BACK_LEFT", "x": -1.2, "y": -0.4, "z": 1.6, "pitch": 0.0, "yaw": -125.0, "roll": 0.0, "fov": 90.0},
+                {"name": "CAM_BACK_RIGHT", "x": -1.2, "y": 0.4, "z": 1.6, "pitch": 0.0, "yaw": 125.0, "roll": 0.0, "fov": 90.0},
+            ],
+            "notes": "Each saved risk_rgb image must be a six-view 2x3 ego-camera montage using the same layout as the source SafeBench capture.",
+        },
     }
 
     if scenario_type == "side_vehicle_intrusion":
@@ -372,6 +396,7 @@ def build_physical_task(plan, scene_reconstruction):
                 "relative_lateral_m",
             ]
         )
+        task["visualization"]["forbidden"] = "Do not save only a front camera view when the primary actor is side-left or side-right."
     else:
         task["action"].update(
             {
@@ -1029,7 +1054,11 @@ Task:
 - Follow carla_plan.actor_motion_plan exactly. L0 gives the initial picture; actor_motion_plan gives what every actor should do after L0.
 - Do not invent actor behavior that contradicts actor_motion_plan.
 - The script must connect to the configured CARLA server using the installed CARLA Python API, reconstruct the L0 ego/front/relevant actors, and execute the requested risk event from carla_plan.
-- Save front-camera images into the --output-dir argument as risk_rgb_XXXX.png.
+- Save risk images into the --output-dir argument as risk_rgb_XXXX.png.
+- Follow physical_task.visualization. By default each risk_rgb_XXXX.png must be a six-view 2x3 ego-camera montage.
+- The required six-view tile order is CAM_FRONT, CAM_FRONT_LEFT, CAM_FRONT_RIGHT, CAM_BACK, CAM_BACK_LEFT, CAM_BACK_RIGHT.
+- Save per-camera images in optional subdirectories if useful, but the top-level risk_rgb_XXXX.png must be the six-view montage used for review.
+- The saved images must make the primary actor/event visible when physical_task.visualization.primary_actor_must_be_visible is true.
 - Write --output-dir/event_trace.json exactly as required by scenario_config.event_contract. The trace must prove that this chain's physical event was applied.
 - Keep the script self-contained. Do not require project imports.
 - Support these CLI arguments: --carla-root, --host, --port, --town, --output-dir, --frames, --save-every.
@@ -1268,6 +1297,33 @@ def validate_risk_images(images_dir):
     return len(images)
 
 
+def png_size(path):
+    with open(path, "rb") as f:
+        header = f.read(24)
+    if len(header) < 24 or not header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return None
+    return struct.unpack(">II", header[16:24])
+
+
+def validate_risk_image_layout(config_path, images_dir):
+    config = read_json(config_path)
+    visualization = (config.get("physical_task") or {}).get("visualization") or {}
+    if visualization.get("default_mode") != "ego_surround_montage":
+        return
+    images = sorted(
+        name
+        for name in os.listdir(images_dir)
+        if name.startswith("risk_rgb_") and name.lower().endswith(".png")
+    )
+    if not images:
+        return
+    size = png_size(os.path.join(images_dir, images[0]))
+    if not size:
+        return
+    width, height = size
+    require(width > height * 2, f"risk image {images[0]} does not look like a 2x3 six-view montage: {width}x{height}")
+
+
 def validate_event_trace_semantics(config, trace, frames):
     plan = config.get("carla_plan", {})
     scenario_type = plan.get("scenario_type")
@@ -1383,6 +1439,7 @@ def run_generated_script_with_repair(args, config_path, script_path, images_dir)
         try:
             run_generated_script(args, script_path, images_dir)
             image_count = validate_risk_images(images_dir)
+            validate_risk_image_layout(config_path, images_dir)
             print(f"Validated risk images: {image_count} files under {os.path.abspath(images_dir)}")
             if args.validate_event_trace:
                 trace_path = validate_event_trace(config_path, images_dir)
