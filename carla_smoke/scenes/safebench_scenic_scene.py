@@ -228,35 +228,33 @@ def set_ego_autopilot(ego, traffic_manager, target_speed_diff):
     traffic_manager.vehicle_percentage_speed_difference(ego, target_speed_diff)
 
 
-def capture_safebench_scene(args):
-    repo_root = repo_root_from_this_file()
-    add_repo_paths(repo_root)
-    check_scenic_python_deps()
-    carla = import_carla_from_root(args.carla_root)
+def scenic_file_candidates(args):
+    if args.scenic_file:
+        return [(os.path.abspath(args.scenic_file), None)]
+    scenic_dir = os.path.abspath(args.scenic_dir)
+    files = list_scenic_files(scenic_dir)
+    if not files:
+        raise FileNotFoundError(f"No .scenic files found under {scenic_dir}")
+    if args.scenario_index < 0 or args.scenario_index >= len(files):
+        raise ValueError(f"--scenario-index {args.scenario_index} out of range; available: 0..{len(files) - 1}")
+    if not args.try_next_on_failure:
+        return [(files[args.scenario_index], args.scenario_index)]
+    return [(path, index) for index, path in enumerate(files[args.scenario_index:], start=args.scenario_index)]
 
-    import numpy as np
-    from safebench.util.scenic_utils import ScenicSimulator
 
-    attach_front_camera, build_scene_snapshot = import_capture_helpers(repo_root)
-
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-
-    scenic_file = choose_scenic_file(args)
+def capture_one_safebench_scene(
+    args,
+    scenic_file,
+    scenario_index,
+    repo_root,
+    carla,
+    ScenicSimulator,
+    attach_front_camera,
+    build_scene_snapshot,
+    params,
+):
     description = extract_scenario_description(scenic_file)
     os.makedirs(args.output_dir, exist_ok=True)
-    if args.clean_output:
-        clean_output_dir(args.output_dir)
-
-    params = {
-        "address": args.host,
-        "port": args.port,
-        "timeout": args.timeout,
-        "render": 0,
-        "timestep": args.timestep,
-    }
-    if args.weather:
-        params["weather"] = args.weather
 
     scenic = None
     camera = None
@@ -340,7 +338,7 @@ def capture_safebench_scene(args):
                     {
                         "scenario_source": "safebench_scenic",
                         "safebench_scenic_file": os.path.relpath(scenic_file, repo_root),
-                        "safebench_scenario_index": args.scenario_index if not args.scenic_file else None,
+                        "safebench_scenario_index": scenario_index,
                         "scenario_description": description,
                     }
                 )
@@ -358,7 +356,7 @@ def capture_safebench_scene(args):
             {
                 "scenario_source": "safebench_scenic",
                 "scenic_file": os.path.relpath(scenic_file, repo_root),
-                "scenario_index": args.scenario_index if not args.scenic_file else None,
+                "scenario_index": scenario_index,
                 "description": description,
                 "frames": args.frames,
                 "save_every": args.save_every,
@@ -389,6 +387,58 @@ def capture_safebench_scene(args):
             except Exception as exc:
                 print(f"WARNING: Scenic simulator cleanup failed: {exc}", file=sys.stderr)
         time.sleep(0.5)
+
+
+def capture_safebench_scene(args):
+    repo_root = repo_root_from_this_file()
+    add_repo_paths(repo_root)
+    check_scenic_python_deps()
+    carla = import_carla_from_root(args.carla_root)
+
+    import numpy as np
+    from safebench.util.scenic_utils import ScenicSimulator
+
+    attach_front_camera, build_scene_snapshot = import_capture_helpers(repo_root)
+
+    params = {
+        "address": args.host,
+        "port": args.port,
+        "timeout": args.timeout,
+        "render": 0,
+        "timestep": args.timestep,
+    }
+    if args.weather:
+        params["weather"] = args.weather
+
+    candidates = scenic_file_candidates(args)
+    failures = []
+    for attempt_index, (scenic_file, scenario_index) in enumerate(candidates):
+        random.seed(args.seed + attempt_index)
+        np.random.seed(args.seed + attempt_index)
+        if args.clean_output or attempt_index > 0:
+            clean_output_dir(args.output_dir)
+        try:
+            return capture_one_safebench_scene(
+                args,
+                scenic_file,
+                scenario_index,
+                repo_root,
+                carla,
+                ScenicSimulator,
+                attach_front_camera,
+                build_scene_snapshot,
+                params,
+            )
+        except Exception as exc:
+            failures.append((scenic_file, repr(exc)))
+            if args.scenic_file or not args.try_next_on_failure:
+                raise
+            print(f"WARNING: SafeBench Scenic sample failed, trying next file: {scenic_file}", file=sys.stderr)
+            print(f"WARNING: failure was: {exc}", file=sys.stderr)
+
+    failure_lines = ["No SafeBench Scenic candidate could be captured."]
+    failure_lines.extend(f"  - {path}: {error}" for path, error in failures)
+    raise RuntimeError("\n".join(failure_lines))
 
 
 def main():
@@ -425,6 +475,12 @@ def main():
     parser.add_argument("--fov", type=float, default=90.0)
     parser.add_argument("--state-radius", type=float, default=80.0)
     parser.add_argument("--clean-output", action="store_true")
+    parser.add_argument(
+        "--try-next-on-failure",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="If a selected .scenic file fails during sampling/simulation, try following files in the same directory.",
+    )
     args = parser.parse_args()
     return capture_safebench_scene(args)
 
