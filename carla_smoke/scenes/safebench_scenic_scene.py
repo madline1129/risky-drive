@@ -68,12 +68,21 @@ def add_repo_paths(repo_root):
 
 
 def carla_python_api_candidates(carla_root):
+    py_tag = f"py{sys.version_info.major}.{sys.version_info.minor}"
+    cp_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
     candidates = [
         os.path.join(carla_root, "PythonAPI", "carla"),
         os.path.join(carla_root, "PythonAPI", "carla", "agents"),
     ]
-    candidates.extend(glob.glob(os.path.join(carla_root, "PythonAPI", "carla", "dist", "carla-*.egg")))
-    candidates.extend(glob.glob(os.path.join(carla_root, "PythonAPI", "carla", "dist", "carla-*.whl")))
+    dist_candidates = []
+    dist_candidates.extend(glob.glob(os.path.join(carla_root, "PythonAPI", "carla", "dist", "carla-*.egg")))
+    dist_candidates.extend(glob.glob(os.path.join(carla_root, "PythonAPI", "carla", "dist", "carla-*.whl")))
+    compatible_dist = [
+        path
+        for path in sorted(dist_candidates)
+        if py_tag in os.path.basename(path) or cp_tag in os.path.basename(path)
+    ]
+    candidates.extend(compatible_dist)
     return candidates
 
 
@@ -86,27 +95,40 @@ def add_carla_python_api(carla_root):
 
 
 def import_carla_from_root(carla_root):
+    try:
+        import carla
+
+        return carla
+    except ImportError:
+        pass
+
     candidates = add_carla_python_api(carla_root)
     try:
         import carla
 
         return carla
     except ImportError as exc:
+        dist_glob = os.path.join(carla_root, "PythonAPI", "carla", "dist", "carla-*")
+        all_dist = sorted(glob.glob(dist_glob))
         existing = [path for path in candidates if os.path.exists(path)]
         message = [
             "Could not import the CARLA Python API before loading Scenic.",
             f"carla_root: {carla_root}",
+            f"current Python: {sys.version_info.major}.{sys.version_info.minor}",
             "Existing CARLA PythonAPI candidates:",
         ]
         if existing:
             message.extend(f"  - {path}" for path in existing)
         else:
             message.append("  - none found")
+        if all_dist:
+            message.append("All CARLA dist files found under this root:")
+            message.extend(f"  - {path}" for path in all_dist)
         message.extend(
             [
-                "Fix by using the correct --carla-root or exporting PYTHONPATH to a compatible CARLA egg/whl.",
-                "Example:",
-                f"  export PYTHONPATH={carla_root}/PythonAPI/carla:{carla_root}/PythonAPI/carla/dist/carla-*.egg:$PYTHONPATH",
+                "Fix by using a CARLA PythonAPI build compatible with the current Python version.",
+                "For example, Python 3.8 needs a py3.8/cp38 CARLA egg/whl; Python 3.7 needs py3.7/cp37.",
+                "If this CARLA install only has py3.7/cp37 files, run this pipeline from a Python 3.7 conda env or install/build a cp38 CARLA PythonAPI.",
             ]
         )
         raise RuntimeError("\n".join(message)) from exc
@@ -371,6 +393,7 @@ def capture_safebench_scene(args):
 
 def main():
     repo_root = repo_root_from_this_file()
+    default_carla_root = os.environ.get("CARLA_ROOT", "/mnt/data2/congfeng/carla915")
     default_scenic_dir = os.path.join(
         repo_root,
         "safebench",
@@ -381,7 +404,7 @@ def main():
     )
 
     parser = argparse.ArgumentParser(description="Run one SafeBench Scenic scenario and save carla_smoke-compatible frames.")
-    parser.add_argument("--carla-root", default="/mnt/data2/congfeng/carla915")
+    parser.add_argument("--carla-root", default=default_carla_root)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2000)
     parser.add_argument("--timeout", type=float, default=20.0)

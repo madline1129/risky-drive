@@ -50,6 +50,7 @@ def derive_l4_town(explicit_town, l0_json_path):
 
 def main():
     repo_root = repo_root_from_this_file()
+    default_carla_root = os.environ.get("CARLA_ROOT", "/mnt/data2/congfeng/carla915")
     default_workdir_root = os.path.join(repo_root, "carla_smoke", "workdir")
     default_scenic_dir = os.path.join(
         repo_root,
@@ -63,7 +64,15 @@ def main():
     parser = argparse.ArgumentParser(
         description="Select one SafeBench Scenic scenario, capture CARLA frames, and run L0-L4 risk generation."
     )
-    parser.add_argument("--carla-root", default="/mnt/data2/congfeng/carla915")
+    parser.add_argument("--carla-root", default=default_carla_root)
+    parser.add_argument(
+        "--carla-python",
+        default=None,
+        help=(
+            "Python executable for CARLA-dependent stages. Use this when the current "
+            "environment cannot import CARLA, for example a Python 3.7 env for a cp37 CARLA API."
+        ),
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2000)
     parser.add_argument("--timeout", type=float, default=300.0)
@@ -109,6 +118,7 @@ def main():
     args = parser.parse_args()
 
     run_id = args.run_id or timestamp()
+    carla_python = args.carla_python or sys.executable
     run_dir = os.path.abspath(os.path.join(args.workdir_root, run_id))
     image_dir = os.path.join(run_dir, "images")
     vision_dir = os.path.join(run_dir, "vision")
@@ -128,7 +138,7 @@ def main():
 
     if not args.skip_scene:
         scene_command = [
-            sys.executable,
+            carla_python,
             scene_script,
             "--carla-root",
             args.carla_root,
@@ -267,7 +277,7 @@ def main():
                 if not args.skip_l4:
                     l4_town = derive_l4_town(args.town, os.path.join(l0_dir, "state.json"))
                     l4_command = [
-                        sys.executable,
+                        carla_python,
                         l4_script,
                         os.path.join(l3_dir, "chains.json"),
                         "--output-dir",
@@ -321,6 +331,7 @@ def main():
         "deepseek_url": args.deepseek_url,
         "ollama_url": args.ollama_url,
         "scene": {
+            "carla_python": carla_python,
             "scenic_dir": args.scenic_dir,
             "scenic_file": args.scenic_file,
             "scenario_index": args.scenario_index,
