@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+"""Capture a SafeBench Scenic scenario into the carla_smoke L0 image format."""
+
+import argparse
+import csv
+import glob
+import json
+import os
+import queue
+import random
+import re
+import sys
+import time
+
+
+def repo_root_from_this_file():
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def add_repo_paths(repo_root):
+    scenic_src = os.path.join(repo_root, "Scenic", "src")
+    for path in [repo_root, scenic_src]:
+        if os.path.exists(path) and path not in sys.path:
+            sys.path.insert(0, path)
+
+
+def add_carla_python_api(carla_root):
+    candidates = [
+        os.path.join(carla_root, "PythonAPI", "carla"),
+        os.path.join(carla_root, "PythonAPI", "carla", "agents"),
+    ]
+    candidates.extend(glob.glob(os.path.join(carla_root, "PythonAPI", "carla", "dist", "carla-*.egg")))
+    candidates.extend(glob.glob(os.path.join(carla_root, "PythonAPI", "carla", "dist", "carla-*.whl")))
+    for path in candidates:
+        if os.path.exists(path) and path not in sys.path:
+            sys.path.insert(0, path)
+
+
+def natural_key(path):
+    name = os.path.basename(path)
+    return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", name)]
+
+
+def list_scenic_files(scenic_dir):
+    files = glob.glob(os.path.join(scenic_dir, "*.scenic"))
+    files = [path for path in files if ".ipynb_checkpoints" not in path]
+    return sorted(files, key=natural_key)
+
+
+def choose_scenic_file(args):
+    if args.scenic_file:
+        return os.path.abspath(args.scenic_file)
+    scenic_dir = os.path.abspath(args.scenic_dir)
+    files = list_scenic_files(scenic_dir)
+    if not files:
+        raise FileNotFoundError(f"No .scenic files found under {scenic_dir}")
+    if args.scenario_index < 0 or args.scenario_index >= len(files):
+        raise ValueError(f"--scenario-index {args.scenario_index} out of range; available: 0..{len(files) - 1}")
+    return files[args.scenario_index]
+
+
+def extract_scenario_description(path):
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read(1200).lstrip()
+    for quote in ("'''", '"""'):
+        if text.startswith(quote):
+            end = text.find(quote, len(quote))
+            if end > len(quote):
+                return " ".join(text[len(quote):end].strip().split())
+    first_line = text.splitlines()[0].strip() if text.splitlines() else ""
+    return first_line[:300]
+
+
+def clean_output_dir(output_dir):
+    for pattern in ["rgb_*.png", "state_*.json", "scene_states.jsonl", "ego_log.csv", "safebench_scene.json"]:
+        for path in glob.glob(os.path.join(output_dir, pattern)):
+            os.remove(path)
+
+
+def write_json(path, data):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def save_ego_log(path, rows):
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["frame", "x", "y", "z", "yaw", "speed_mps"])
+        writer.writerows(rows)
+
+
+def save_scene_states(path, snapshots):
+    with open(path, "w", encoding="utf-8") as f:
+        for snapshot in snapshots:
+            f.write(json.dumps(snapshot, ensure_ascii=False) + "\n")
+
+
+def vector_length(vector):
+    return (vector.x * vector.x + vector.y * vector.y + vector.z * vector.z) ** 0.5
+
+
+def import_capture_helpers(repo_root):
+    add_repo_paths(repo_root)
+    from carla_smoke.scenes.normal_driving_scene import attach_front_camera, build_scene_snapshot
+
+    return attach_front_camera, build_scene_snapshot
+
+
+def get_ego_actor(simulation):
+    ego_object = getattr(simulation, "ego", None)
+    if ego_object is not None and getattr(ego_object, "carlaActor", None) is not None:
+        return ego_object.carlaActor
+    if simulation.objects and getattr(simulation.objects[0], "carlaActor", None) is not None:
+        return simulation.objects[0].carlaActor
+    raise RuntimeError("SafeBench/Scenic simulation did not expose an ego CARLA actor.")
+
+
+def prime_scenic_behavior(scenic):
+    update_behavior = scenic.runSimulation()
+    next(update_behavior)
+    return update_behavior
+
+
+def set_ego_autopilot(ego, traffic_manager, target_speed_diff):
+    if not hasattr(ego, "set_autopilot"):
+        return
+    ego.set_autopilot(True, traffic_manager.get_port())
+    traffic_manager.vehicle_percentage_speed_difference(ego, target_speed_diff)
+
+
+def capture_safebench_scene(args):
+    repo_root = repo_root_from_this_file()
+    add_repo_paths(repo_root)
+    add_carla_python_api(args.carla_root)
+
+    import numpy as np
+    from safebench.util.scenic_utils import ScenicSimulator
+
+    attach_front_camera, build_scene_snapshot = import_capture_helpers(repo_root)
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+
+    scenic_file = choose_scenic_file(args)
+    description = extract_scenario_description(scenic_file)
+    os.makedirs(args.output_dir, exist_ok=True)
+    if args.clean_output:
+        clean_output_dir(args.output_dir)
+
+    params = {
+        "address": args.host,
+        "port": args.port,
+        "timeout": args.timeout,
+        "render": 0,
+        "timestep": args.timestep,
+    }
+    if args.weather:
+        params["weather"] = args.weather
+
+    scenic = None
+    camera = None
+    image_queue = queue.Queue()
+    log_rows = []
+    state_snapshots = []
+
+    try:
+        print(f"SafeBench Scenic file: {scenic_file}")
+        scenic = ScenicSimulator(scenic_file, params)
+
+        scene = None
+        for attempt in range(1, args.scene_sample_attempts + 1):
+            candidate_scene, iterations = scenic.generateScene()
+            print(f"Generated Scenic scene attempt {attempt} after {iterations} rejection iterations.")
+            if scenic.setSimulation(candidate_scene):
+                scene = candidate_scene
+                break
+            scenic.endSimulation()
+        if scene is None:
+            raise RuntimeError(f"Failed to create a CARLA simulation after {args.scene_sample_attempts} Scenic samples.")
+
+        simulation = scenic.simulation
+        world = simulation.world
+        blueprints = world.get_blueprint_library()
+        ego = get_ego_actor(simulation)
+
+        traffic_manager = simulation.tm
+        traffic_manager.set_random_device_seed(args.seed)
+        set_ego_autopilot(ego, traffic_manager, args.ego_speed_difference)
+
+        camera = attach_front_camera(
+            __import__("carla"),
+            world,
+            ego,
+            blueprints,
+            image_queue,
+            args.width,
+            args.height,
+            args.fov,
+        )
+
+        update_behavior = prime_scenic_behavior(scenic)
+        for _ in range(args.warmup_ticks):
+            world.tick()
+            simulation.updateObjects()
+            while not image_queue.empty():
+                image_queue.get_nowait()
+
+        saved = 0
+        for frame_idx in range(args.frames):
+            try:
+                next(update_behavior)
+            except StopIteration:
+                print(f"Scenic behavior ended at frame {frame_idx}.")
+                break
+
+            world.tick()
+            simulation.updateObjects()
+            image = image_queue.get(timeout=5.0)
+
+            ego_transform = ego.get_transform()
+            speed = vector_length(ego.get_velocity())
+            log_rows.append(
+                [
+                    frame_idx,
+                    f"{ego_transform.location.x:.3f}",
+                    f"{ego_transform.location.y:.3f}",
+                    f"{ego_transform.location.z:.3f}",
+                    f"{ego_transform.rotation.yaw:.3f}",
+                    f"{speed:.3f}",
+                ]
+            )
+
+            if frame_idx % args.save_every == 0:
+                image_file = f"rgb_{frame_idx:04d}.png"
+                image.save_to_disk(os.path.join(args.output_dir, image_file))
+                snapshot = build_scene_snapshot(__import__("carla"), world, ego, frame_idx, image_file, args.state_radius)
+                snapshot.setdefault("source", {})
+                snapshot["source"].update(
+                    {
+                        "scenario_source": "safebench_scenic",
+                        "safebench_scenic_file": os.path.relpath(scenic_file, repo_root),
+                        "safebench_scenario_index": args.scenario_index if not args.scenic_file else None,
+                        "scenario_description": description,
+                    }
+                )
+                state_snapshots.append(snapshot)
+                write_json(os.path.join(args.output_dir, f"state_{frame_idx:04d}.json"), snapshot)
+                saved += 1
+
+            if frame_idx % 20 == 0:
+                print(f"frame={frame_idx:04d} ego_speed={speed:.2f} m/s saved={saved}")
+
+        save_ego_log(os.path.join(args.output_dir, "ego_log.csv"), log_rows)
+        save_scene_states(os.path.join(args.output_dir, "scene_states.jsonl"), state_snapshots)
+        write_json(
+            os.path.join(args.output_dir, "safebench_scene.json"),
+            {
+                "scenario_source": "safebench_scenic",
+                "scenic_file": os.path.relpath(scenic_file, repo_root),
+                "scenario_index": args.scenario_index if not args.scenic_file else None,
+                "description": description,
+                "frames": args.frames,
+                "save_every": args.save_every,
+                "saved_images": saved,
+                "params": params,
+            },
+        )
+        print(f"Done. Saved {saved} SafeBench-derived images and L0 states: {os.path.abspath(args.output_dir)}")
+        return 0
+
+    finally:
+        if camera is not None:
+            try:
+                camera.stop()
+            except Exception:
+                pass
+            try:
+                camera.destroy()
+            except Exception:
+                pass
+        if scenic is not None:
+            try:
+                scenic.endSimulation()
+            except Exception as exc:
+                print(f"WARNING: Scenic simulation cleanup failed: {exc}", file=sys.stderr)
+            try:
+                scenic.destroy()
+            except Exception as exc:
+                print(f"WARNING: Scenic simulator cleanup failed: {exc}", file=sys.stderr)
+        time.sleep(0.5)
+
+
+def main():
+    repo_root = repo_root_from_this_file()
+    default_scenic_dir = os.path.join(
+        repo_root,
+        "safebench",
+        "scenario",
+        "scenario_data",
+        "scenic_data",
+        "dynamic_scenario",
+    )
+
+    parser = argparse.ArgumentParser(description="Run one SafeBench Scenic scenario and save carla_smoke-compatible frames.")
+    parser.add_argument("--carla-root", default="/mnt/data2/congfeng/carla915")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=2000)
+    parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument("--scenic-dir", default=default_scenic_dir)
+    parser.add_argument("--scenic-file", default=None)
+    parser.add_argument("--scenario-index", type=int, default=0)
+    parser.add_argument("--scene-sample-attempts", type=int, default=20)
+    parser.add_argument("--output-dir", default="carla_smoke/outputs/safebench_scenic")
+    parser.add_argument("--frames", type=int, default=160)
+    parser.add_argument("--save-every", type=int, default=5)
+    parser.add_argument("--warmup-ticks", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--timestep", type=float, default=0.05)
+    parser.add_argument("--ego-speed-difference", type=float, default=-5.0)
+    parser.add_argument("--weather", default="ClearNoon")
+    parser.add_argument("--width", type=int, default=800)
+    parser.add_argument("--height", type=int, default=450)
+    parser.add_argument("--fov", type=float, default=90.0)
+    parser.add_argument("--state-radius", type=float, default=80.0)
+    parser.add_argument("--clean-output", action="store_true")
+    args = parser.parse_args()
+    return capture_safebench_scene(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

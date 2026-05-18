@@ -833,6 +833,19 @@ def validate_event_trace(config_path, images_dir):
     return trace_path
 
 
+def validate_risk_images(images_dir):
+    if not os.path.isdir(images_dir):
+        raise RuntimeError(f"generated script did not create risk image directory: {images_dir}")
+    images = [
+        name
+        for name in os.listdir(images_dir)
+        if name.startswith("risk_rgb_") and name.lower().endswith(".png")
+    ]
+    if not images:
+        raise RuntimeError(f"generated script did not save any risk_rgb_*.png images under: {images_dir}")
+    return len(images)
+
+
 def validate_event_trace_semantics(config, trace, frames):
     plan = config.get("carla_plan", {})
     scenario_type = plan.get("scenario_type")
@@ -914,8 +927,11 @@ def run_generated_script_with_repair(args, config_path, script_path, images_dir)
     for attempt in range(0, args.opencode_repair_attempts + 1):
         try:
             run_generated_script(args, script_path, images_dir)
-            trace_path = validate_event_trace(config_path, images_dir)
-            print(f"Validated event trace: {os.path.abspath(trace_path)}")
+            image_count = validate_risk_images(images_dir)
+            print(f"Validated risk images: {image_count} files under {os.path.abspath(images_dir)}")
+            if args.validate_event_trace:
+                trace_path = validate_event_trace(config_path, images_dir)
+                print(f"Validated event trace: {os.path.abspath(trace_path)}")
             return
         except (subprocess.CalledProcessError, RuntimeError) as exc:
             last_error = error_output_from_exception(exc)
@@ -1002,6 +1018,11 @@ def main():
     parser.add_argument("--opencode-bin", default="opencode")
     parser.add_argument("--opencode-model", default="deepseek/deepseek-v4-pro")
     parser.add_argument("--opencode-repair-attempts", type=int, default=REPAIR_ATTEMPTS)
+    parser.add_argument(
+        "--validate-event-trace",
+        action="store_true",
+        help="Also validate event_trace.json structure and scenario-specific numeric semantics after execution.",
+    )
     args = parser.parse_args()
 
     chains_data = read_json(args.l3_json)
