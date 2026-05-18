@@ -81,7 +81,7 @@ def main():
     parser.add_argument("--scenario-index", type=int, default=0)
     parser.add_argument("--scene-sample-attempts", type=int, default=20)
     parser.add_argument("--frames", type=int, default=160)
-    parser.add_argument("--save-every", type=int, default=5)
+    parser.add_argument("--save-every", type=int, default=20, help="Save one frame every N ticks. With --timestep 0.05, 20 ticks = 1 second.")
     parser.add_argument("--warmup-ticks", type=int, default=5)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--timestep", type=float, default=0.05)
@@ -109,6 +109,7 @@ def main():
     parser.add_argument("--skip-l4", action="store_true")
     parser.add_argument("--l4-chain-index", type=int, default=0)
     parser.add_argument("--l4-all-chains", action="store_true")
+    parser.add_argument("--continue-on-chain-error", action="store_true", help="When running all L4 chains, continue if one generated risk scene fails.")
     parser.add_argument("--l4-frames", type=int, default=140)
     parser.add_argument("--l4-save-every", type=int, default=5)
     parser.add_argument("--validate-event-trace", action="store_true")
@@ -316,6 +317,8 @@ def main():
                     ]
                     if args.l4_all_chains:
                         l4_command.append("--all-chains")
+                        if args.continue_on_chain_error:
+                            l4_command.append("--continue-on-chain-error")
                     else:
                         l4_command.extend(["--chain-index", str(args.l4_chain_index)])
                     if args.validate_event_trace:

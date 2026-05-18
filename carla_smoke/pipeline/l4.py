@@ -1019,6 +1019,7 @@ def main():
     parser.add_argument("l3_json", help="Path to l3/chains.json.")
     parser.add_argument("--chain-index", type=int, default=0)
     parser.add_argument("--all-chains", action="store_true", help="Generate L4 outputs for every chain in l3_json.")
+    parser.add_argument("--continue-on-chain-error", action="store_true", help="In --all-chains mode, keep running later chains if one chain fails.")
     parser.add_argument("--output-dir", default="carla_smoke/workdir/manual/l4")
     parser.add_argument("--l0-json", default=None, help="Optional L0 state.json used to reconstruct the original scene.")
     parser.add_argument("--carla-root", default="/mnt/data2/congfeng/carla915")
@@ -1052,6 +1053,19 @@ def main():
             args.output_dir = chain_output_dir(original_output_dir, chain, index, True)
             try:
                 results.append(execute_chain(args, chain, l0_state, args.output_dir))
+            except Exception as exc:
+                if not args.continue_on_chain_error:
+                    raise
+                results.append(
+                    {
+                        "chain_id": chain.get("id"),
+                        "source_l2_id": chain.get("parent_l2_id"),
+                        "output_dir": os.path.abspath(args.output_dir),
+                        "scenario_type": (chain.get("carla_plan") or {}).get("scenario_type"),
+                        "error": repr(exc),
+                    }
+                )
+                print(f"WARNING: L4 chain failed, continuing: {exc}", file=sys.stderr)
             finally:
                 args.output_dir = original_output_dir
         manifest_path = os.path.join(args.output_dir, "l4_manifest.json")
