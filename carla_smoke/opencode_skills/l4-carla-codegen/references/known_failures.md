@@ -23,3 +23,15 @@ Fix: keep CARLA import and config loading inside `main()` after `args = parser.p
 Cause: camera queue not drained after `world.tick()`, or `save_every` branch never calls `save_to_disk`.
 
 Fix: call `image = image_queue.get(timeout=5.0)` after each tick and save frames named `risk_rgb_XXXX.png`.
+
+## `event_trace.frames` is an integer or `frame_data` contains the trace
+
+Cause: the script wrote a frame count into `frames` and put per-frame dictionaries under a different key.
+
+Fix: write `frames` as the non-empty list of per-frame dictionaries. Do not use `frame_data`.
+
+## Side-vehicle intrusion looks like an empty road or generic obstacle
+
+Cause: the script ignored `physical_task.primary_actor` and spawned an unrelated obstacle, or the lateral shift was too small to enter the ego lane band.
+
+Fix: use the same L0 actor id/type from `physical_task.primary_actor`, move it toward the ego lane after trigger, and satisfy `physical_task.success_criteria`.

@@ -14,6 +14,17 @@ Shared fields:
 - `reconstruction_policy`: requirements for preserving the L0 scene identity.
 - `event_contract`: required per-chain event trace output. Treat this as a hard acceptance contract.
 - `carla_plan.actor_motion_plan`: explicit movement/behavior plan for all important actors after the L0 snapshot.
+- `physical_task`: hard physical task order. This is the most authoritative part of the config for the generated script.
+
+If `physical_task` conflicts with free-form text such as `chain_description`, follow `physical_task`.
+
+Important `physical_task` fields:
+
+- `physical_task.primary_actor`: the actor that must drive the event.
+- `physical_task.primary_actor.source == "l0_actor"` means reuse that same L0 actor id/type/pose as the primary event actor. Do not replace it with a generic spawned obstacle.
+- `physical_task.action`: required motion, trigger timing, and target geometry.
+- `physical_task.success_criteria`: numeric acceptance criteria. The generated physical scene must satisfy these.
+- `physical_task.trace_schema.top_level_frames_key`: per-frame trace data must be written under this key, normally `frames`.
 
 When `scene_reconstruction` is present, use it before generic spawn points:
 
@@ -28,6 +39,7 @@ Event trace:
 - Write `event_trace.json` under `--output-dir`.
 - `event_trace.scenario_type` must match `carla_plan.scenario_type`.
 - `event_trace.frames` must record the event-specific physical state over time.
+- Do not write per-frame trace data under `frame_data`.
 - Use `event_contract.required_frame_fields` to choose per-frame keys.
 
 Actor motion plan:
@@ -78,5 +90,16 @@ Only implement static or slow obstacle intrusion, not vehicle braking or cargo d
 - `carla_plan.object_type`: obstacle category.
 - `carla_plan.initial_position`: obstacle start position.
 - `carla_plan.motion`: static or slow lateral/longitudinal motion.
+
+## `side_vehicle_intrusion`
+
+Only implement an existing L0 side vehicle laterally intruding toward the ego lane.
+
+- The primary actor must be `physical_task.primary_actor.actor_id`.
+- Spawn/reconstruct that actor from `physical_task.primary_actor.initial_location` and `initial_rotation`.
+- Move the same vehicle toward the ego lane after `physical_task.action.trigger_frame`.
+- The motion must satisfy `physical_task.success_criteria.relative_lateral_delta_m_min` and `min_abs_relative_lateral_m_max`.
+- Do not spawn a new road obstacle as the primary actor.
+- Do not implement this as front-vehicle braking, cargo drop, or a generic static obstacle.
 
 Keep missing fields safe by using defaults.

@@ -212,7 +212,7 @@ def adapt_actor_motion_plan_to_reconstruction(plan, reconstruction_state):
         return plan
 
     scenario_type = plan.get("scenario_type")
-    if scenario_type not in {"vulnerable_actor_intrusion", "road_obstacle_intrusion", "cargo_drop", "front_vehicle_brake"}:
+    if scenario_type not in {"vulnerable_actor_intrusion", "road_obstacle_intrusion", "cargo_drop", "front_vehicle_brake", "side_vehicle_intrusion"}:
         return plan
 
     ego_plan = motion_plan.get("ego")
@@ -245,6 +245,148 @@ def adapt_actor_motion_plan_to_reconstruction(plan, reconstruction_state):
     return plan
 
 
+def actor_id_from_plan(plan):
+    motion_plan = plan.get("actor_motion_plan") if isinstance(plan, dict) else {}
+    primary = motion_plan.get("primary_actor") if isinstance(motion_plan, dict) else {}
+    actor_id = primary.get("actor_id") if isinstance(primary, dict) else None
+    try:
+        return int(actor_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def actor_by_id(l0_state, actor_id):
+    if actor_id is None or not isinstance(l0_state, dict):
+        return None
+    actors = l0_state.get("actors", [])
+    if not isinstance(actors, list):
+        return None
+    for actor in actors:
+        if not isinstance(actor, dict):
+            continue
+        try:
+            if int(actor.get("id")) == int(actor_id):
+                return actor
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def is_lateral_vehicle_motion(plan):
+    motion = plan.get("motion") if isinstance(plan, dict) else {}
+    motion_mode = str((motion or {}).get("mode", "")).lower()
+    text = json.dumps(plan.get("actor_motion_plan", {}), ensure_ascii=False).lower()
+    indicators = [
+        "lateral",
+        "lane_change",
+        "shift",
+        "intruder_vehicle",
+        "accelerating_vehicle",
+    ]
+    return any(indicator in motion_mode or indicator in text for indicator in indicators)
+
+
+def refine_plan_against_l0(plan, reconstruction_state):
+    plan = dict(plan)
+    actor_id = actor_id_from_plan(plan)
+    actor = actor_by_id(reconstruction_state, actor_id)
+    if actor and actor.get("kind") == "vehicle" and is_lateral_vehicle_motion(plan):
+        plan["scenario_type"] = "side_vehicle_intrusion"
+        plan["primary_actor_source"] = "l0_actor"
+        plan["primary_actor_id"] = actor_id
+        plan["primary_actor_type_id"] = actor.get("type_id")
+        plan["primary_actor_initial_relative_lateral_m"] = actor.get("relative_lateral_m")
+        plan["primary_actor_initial_distance_m"] = actor.get("distance_m")
+        plan.setdefault("expected_visual_result", "L0侧方车辆向自车车道方向横向侵入")
+    return plan
+
+
+def build_physical_task(plan, scene_reconstruction):
+    scenario_type = plan.get("scenario_type", "unknown")
+    trigger_frame = int(plan.get("trigger_frame", 20) or 20)
+    motion = plan.get("motion", {}) if isinstance(plan.get("motion"), dict) else {}
+    actor_id = actor_id_from_plan(plan) or plan.get("primary_actor_id")
+    primary_actor = actor_by_id(scene_reconstruction, actor_id)
+
+    task = {
+        "version": "l4_physical_task_v1",
+        "scenario_type": scenario_type,
+        "hard_rule": "The generated CARLA scene must implement this physical_task exactly; do not substitute a different actor, object, or event type.",
+        "primary_actor": {
+            "source": "l0_actor" if primary_actor else "generated_actor",
+            "actor_id": actor_id,
+            "kind": primary_actor.get("kind") if primary_actor else None,
+            "type_id": primary_actor.get("type_id") if primary_actor else None,
+            "initial_location": primary_actor.get("location") if primary_actor else None,
+            "initial_rotation": primary_actor.get("rotation") if primary_actor else None,
+            "initial_relative_lateral_m": primary_actor.get("relative_lateral_m") if primary_actor else None,
+            "initial_relative_longitudinal_m": primary_actor.get("relative_longitudinal_m") if primary_actor else None,
+            "initial_distance_m": primary_actor.get("distance_m") if primary_actor else None,
+        },
+        "ego_actor": {
+            "source": "l0_ego",
+            "initial_location": (scene_reconstruction.get("ego") or {}).get("location") if isinstance(scene_reconstruction, dict) else None,
+            "initial_rotation": (scene_reconstruction.get("ego") or {}).get("rotation") if isinstance(scene_reconstruction, dict) else None,
+        },
+        "action": {
+            "trigger_frame": trigger_frame,
+            "duration_frames": max(10, int(round(float(motion.get("duration_s", 1.0) or 1.0) / 0.05))),
+        },
+        "trace_schema": {
+            "top_level_frames_key": "frames",
+            "forbidden_top_level_frame_data_key": "frame_data",
+            "required_common_frame_fields": ["frame", "ego_speed_mps"],
+        },
+    }
+
+    if scenario_type == "side_vehicle_intrusion":
+        initial_lateral = primary_actor.get("relative_lateral_m") if primary_actor else None
+        requested_shift = abs(float(motion.get("distance_m", motion.get("lateral_shift_m", 0.5)) or 0.5))
+        try:
+            needed_shift = max(requested_shift, abs(float(initial_lateral)) - 2.0)
+        except (TypeError, ValueError):
+            needed_shift = max(requested_shift, 1.5)
+        task["action"].update(
+            {
+                "mode": "move_existing_side_vehicle_toward_ego_lane",
+                "direction": "toward_ego_lane_center",
+                "minimum_lateral_shift_m": round(max(needed_shift, 1.2), 3),
+                "target_abs_relative_lateral_m_max": 2.2,
+                "keep_primary_actor_visible": True,
+                "do_not_spawn_replacement_primary_actor": True,
+            }
+        )
+        task["success_criteria"] = {
+            "primary_actor_id_must_match": actor_id,
+            "relative_lateral_delta_m_min": round(max(needed_shift, 1.2), 3),
+            "min_abs_relative_lateral_m_max": 2.2,
+            "min_distance_to_ego_m_max": 8.0,
+            "saved_images_must_show_primary_actor": True,
+        }
+        task["trace_schema"]["required_common_frame_fields"].extend(
+            [
+                "primary_actor_id",
+                "primary_actor_type_id",
+                "primary_actor_position",
+                "distance_to_ego_m",
+                "relative_lateral_m",
+            ]
+        )
+    else:
+        task["action"].update(
+            {
+                "mode": motion.get("mode", scenario_type),
+                "raw_motion": motion,
+            }
+        )
+        task["success_criteria"] = {
+            "must_match_scenario_type": scenario_type,
+            "must_use_primary_actor_from_event_contract": True,
+            "saved_images_must_show_primary_event": True,
+        }
+    return task
+
+
 def normalize_l4_plan(plan):
     if not isinstance(plan, dict):
         plan = {}
@@ -255,6 +397,7 @@ def normalize_l4_plan(plan):
         "front_vehicle_brake",
         "vulnerable_actor_intrusion",
         "road_obstacle_intrusion",
+        "side_vehicle_intrusion",
     }:
         scenario_type = "road_obstacle_intrusion"
     trigger_frame = int(plan.get("trigger_frame", 45) or 45)
@@ -315,6 +458,24 @@ def normalize_l4_plan(plan):
                 "expected_visual_result",
                 "货物/障碍物从前方车辆后部进入自车前方区域",
             ),
+        }
+        normalized["actor_motion_plan"] = plan.get("actor_motion_plan") or default_actor_motion_plan(normalized)
+        return normalized
+
+    if scenario_type == "side_vehicle_intrusion":
+        normalized = {
+            "scenario_type": scenario_type,
+            "object_type": plan.get("object_type", "existing_side_vehicle"),
+            "trigger_frame": trigger_frame,
+            "motion": plan.get(
+                "motion",
+                {
+                    "mode": "lateral_shift_toward_ego_lane",
+                    "duration_s": 1.0,
+                    "distance_m": 1.5,
+                },
+            ),
+            "expected_visual_result": plan.get("expected_visual_result", "L0侧方车辆向自车车道方向横向侵入"),
         }
         normalized["actor_motion_plan"] = plan.get("actor_motion_plan") or default_actor_motion_plan(normalized)
         return normalized
@@ -407,6 +568,21 @@ def default_actor_motion_plan(plan):
                 "behavior": "drop_or_slide_toward_ego_lane_after_trigger",
                 "trigger_frame": trigger_frame,
                 "must_enter_ego_path": True,
+            },
+            "background_actors": {"behavior": "preserve_l0_or_ignore_if_not_relevant"},
+        }
+    if scenario_type == "side_vehicle_intrusion":
+        return {
+            "ego": {
+                "role": "observer_vehicle",
+                "behavior": "maintain_current_speed",
+                "avoid_collision": True,
+            },
+            "primary_actor": {
+                "role": "existing_l0_side_vehicle",
+                "behavior": "move_laterally_toward_ego_lane_after_trigger",
+                "trigger_frame": trigger_frame,
+                "must_enter_ego_lane_lateral_band": True,
             },
             "background_actors": {"behavior": "preserve_l0_or_ignore_if_not_relevant"},
         }
@@ -521,6 +697,37 @@ def build_event_contract(plan):
                 },
             }
         )
+    elif scenario_type == "side_vehicle_intrusion":
+        base.update(
+            {
+                "primary_actor": "existing_l0_side_vehicle",
+                "background_actors": ["ego", "nearby_actors"],
+                "event_applied": "configured existing side vehicle moves laterally toward the ego lane after trigger_frame",
+                "required_frame_fields": [
+                    "frame",
+                    "ego_speed_mps",
+                    "primary_actor_id",
+                    "primary_actor_type_id",
+                    "primary_actor_position",
+                    "distance_to_ego_m",
+                    "relative_lateral_m",
+                ],
+                "success_condition": "the same L0 side vehicle actor moves laterally toward the ego lane and gets close enough to be a visible side intrusion",
+                "forbidden": [
+                    "spawning a new obstacle as the primary event",
+                    "payload actors",
+                    "metal_pipe",
+                    "front-vehicle braking as the primary event",
+                    "using a different actor id as the primary actor",
+                ],
+                "numeric_acceptance": {
+                    "relative_lateral_delta_m_min": 1.2,
+                    "min_abs_relative_lateral_m_max": 2.2,
+                    "min_distance_to_ego_m_max": 8.0,
+                    "primary_actor_id_must_match_config": True,
+                },
+            }
+        )
     else:
         base.update(
             {
@@ -556,6 +763,7 @@ def build_config(
         source_timestep=source_timestep,
     )
     plan = adapt_actor_motion_plan_to_reconstruction(plan, reconstruction_state)
+    plan = refine_plan_against_l0(plan, reconstruction_state)
     time_axis_policy.update(
         {
             "local_trigger_frame": local_trigger_frame,
@@ -567,6 +775,7 @@ def build_config(
         }
     )
     scene_reconstruction = compact_l0_scene(reconstruction_state)
+    physical_task = build_physical_task(plan, scene_reconstruction or {})
     return {
         "level": "L4",
         "name": "CARLA代码执行",
@@ -580,6 +789,7 @@ def build_config(
         "trigger_frame": plan.get("trigger_frame", 45),
         "original_l3_trigger_frame": original_trigger_frame,
         "carla_plan": plan,
+        "physical_task": physical_task,
         "event_contract": build_event_contract(plan),
         "scene_reconstruction": scene_reconstruction,
         "time_axis_policy": time_axis_policy,
@@ -809,6 +1019,9 @@ Task:
 - Edit the neutral seeded Python script in place at exactly:
   {output_script}
 - Replace the NotImplementedError with scenario-specific behavior from scenario_config.json.
+- Treat scenario_config.physical_task as the hard physical task order. It defines the primary actor, the action, timing, trace schema, and success criteria.
+- If physical_task conflicts with free-form text such as chain_description or expected_visual_result, follow physical_task.
+- If physical_task.primary_actor.source is "l0_actor", the primary event must use that same L0 actor id/type/initial pose as closely as CARLA spawn constraints allow. Do not replace it with a generic obstacle or newly invented actor.
 - Reconstruct the scene from L0 scene_reconstruction/source state: preserve town/map, weather, ego pose, nearest front actor, and relevant nearby actors as much as CARLA spawn constraints allow.
 - Treat carla_plan.trigger_frame as a local frame in the generated L4 simulation, not as an original SafeBench global frame.
 - Follow scenario_config.time_axis_policy: start from scene_reconstruction.source_frame, trigger at local_trigger_frame, then continue until --frames.
@@ -823,10 +1036,12 @@ Task:
 - Use synchronous mode and restore original world settings in finally.
 - Respect carla_plan.scenario_type exactly. Do not combine unrelated actions across scenario types.
 - Respect scenario_config.event_contract.primary_actor. The primary actor must drive the visible risk event; background actors must not become the main event.
+- Write event_trace.json with top-level "frames" as a non-empty list of per-frame states. Do not write per-frame states under "frame_data".
 - For front_vehicle_brake, implement only front-vehicle braking/deceleration. Do not spawn payloads or metal pipes unless the config explicitly uses cargo_drop.
 - For cargo_drop, implement payload/drop motion from the configured object and motion fields.
 - For vulnerable_actor_intrusion, implement a walker/cyclist intrusion using actor_type and crossing fields.
 - For road_obstacle_intrusion, implement a static or slow obstacle entering the ego lane.
+- For side_vehicle_intrusion, use the existing L0 side vehicle from physical_task.primary_actor. Move that vehicle laterally toward the ego lane after physical_task.action.trigger_frame until physical_task.success_criteria is satisfied. Do not implement this as a spawned road obstacle.
 - Import CARLA safely: add CARLA PythonAPI paths first, then import carla inside main or a helper and return the module.
 - Do not reference a global carla variable before importing it. Avoid patterns like "if carla is None" inside a function that also imports carla.
 - Before finishing, make sure the script would pass "python -m py_compile".
@@ -851,6 +1066,7 @@ Execution error:
 {error_output}
 
 Edit the existing script in place. Keep the same CLI arguments and output behavior.
+Treat scenario_config.physical_task as the hard execution contract. If the script does not satisfy physical_task.success_criteria, change the physical scene, not just the trace.
 Fix the root cause, especially CARLA import/scope errors such as UnboundLocalError from referencing carla before import.
 If the failure mentions event_trace, implement or fix --output-dir/event_trace.json according to scenario_config.event_contract.
 If the failure mentions semantic validation, change the physical scene so the primary actor satisfies event_contract.numeric_acceptance; do not fake trace values.
@@ -1028,6 +1244,8 @@ def validate_event_trace(config_path, images_dir):
         raise RuntimeError(
             f"event_trace scenario_type mismatch: expected {expected_type!r}, got {trace.get('scenario_type')!r}"
         )
+    if "frame_data" in trace:
+        raise RuntimeError("event_trace must put per-frame state in top-level frames, not frame_data.")
     frames = trace.get("frames")
     if not isinstance(frames, list) or not frames:
         raise RuntimeError("event_trace.frames must be a non-empty list of per-frame event state.")
@@ -1107,6 +1325,39 @@ def validate_event_trace_semantics(config, trace, frames):
         laterals = numeric_values(after, "obstacle_relative_lateral_m")
         if laterals:
             require(min(abs(value) for value in laterals) <= 2.2, "road_obstacle_intrusion obstacle never entered ego lane laterally.")
+        return
+
+    if scenario_type == "side_vehicle_intrusion":
+        physical_task = config.get("physical_task", {})
+        expected_actor_id = (
+            physical_task.get("primary_actor", {}).get("actor_id")
+            or plan.get("primary_actor_id")
+            or actor_id_from_plan(plan)
+        )
+        observed_ids = [frame.get("primary_actor_id") for frame in frames if frame.get("primary_actor_id") is not None]
+        require(observed_ids, "side_vehicle_intrusion trace must include primary_actor_id in frames.")
+        if expected_actor_id is not None:
+            require(
+                all(str(actor_id) == str(expected_actor_id) for actor_id in observed_ids),
+                f"side_vehicle_intrusion primary_actor_id must stay {expected_actor_id}; got {sorted(set(map(str, observed_ids)))}.",
+            )
+        actor_points = point_values(after, "primary_actor_position")
+        require(len(actor_points) >= 2, "side_vehicle_intrusion trace must include primary_actor_position after trigger.")
+        laterals = numeric_values(frames, "relative_lateral_m")
+        require(laterals, "side_vehicle_intrusion trace must include relative_lateral_m.")
+        action = physical_task.get("action", {})
+        criteria = physical_task.get("success_criteria", {})
+        delta_min = float(criteria.get("relative_lateral_delta_m_min", action.get("minimum_lateral_shift_m", 1.2)) or 1.2)
+        lane_max = float(criteria.get("min_abs_relative_lateral_m_max", action.get("target_abs_relative_lateral_m_max", 2.2)) or 2.2)
+        lateral_delta = max(abs(laterals[0] - value) for value in laterals[1:]) if len(laterals) >= 2 else 0.0
+        require(lateral_delta >= delta_min, f"side_vehicle_intrusion lateral motion too small: {lateral_delta:.3f}m < {delta_min:.3f}m.")
+        require(min(abs(value) for value in laterals) <= lane_max, "side_vehicle_intrusion actor never entered the required ego-lane lateral band.")
+        distances = numeric_values(frames, "distance_to_ego_m")
+        require(distances, "side_vehicle_intrusion trace must include distance_to_ego_m.")
+        distance_max = float(criteria.get("min_distance_to_ego_m_max", 8.0) or 8.0)
+        require(min(distances) <= distance_max, "side_vehicle_intrusion actor never got close enough to ego.")
+        forbidden_text = json.dumps(trace, ensure_ascii=False).lower()
+        require("payload" not in forbidden_text and "metal_pipe" not in forbidden_text, "side_vehicle_intrusion trace includes unrelated cargo artifacts.")
         return
 
 
