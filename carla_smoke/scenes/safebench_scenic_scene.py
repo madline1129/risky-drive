@@ -9,8 +9,11 @@ import os
 import queue
 import random
 import re
+import shutil
+import struct
 import sys
 import time
+import zlib
 
 
 def check_scenic_python_deps():
@@ -169,10 +172,31 @@ def extract_scenario_description(path):
     return first_line[:300]
 
 
+CAMERA_SPECS = [
+    ("CAM_FRONT", {"x": 1.5, "y": 0.0, "z": 1.6, "pitch": 0.0, "yaw": 0.0, "roll": 0.0}),
+    ("CAM_FRONT_LEFT", {"x": 1.2, "y": -0.4, "z": 1.6, "pitch": 0.0, "yaw": -55.0, "roll": 0.0}),
+    ("CAM_FRONT_RIGHT", {"x": 1.2, "y": 0.4, "z": 1.6, "pitch": 0.0, "yaw": 55.0, "roll": 0.0}),
+    ("CAM_BACK", {"x": -1.5, "y": 0.0, "z": 1.6, "pitch": 0.0, "yaw": 180.0, "roll": 0.0}),
+    ("CAM_BACK_LEFT", {"x": -1.2, "y": -0.4, "z": 1.6, "pitch": 0.0, "yaw": -125.0, "roll": 0.0}),
+    ("CAM_BACK_RIGHT", {"x": -1.2, "y": 0.4, "z": 1.6, "pitch": 0.0, "yaw": 125.0, "roll": 0.0}),
+]
+
+
 def clean_output_dir(output_dir):
-    for pattern in ["rgb_*.png", "state_*.json", "scene_states.jsonl", "ego_log.csv", "safebench_scene.json"]:
+    for pattern in [
+        "rgb_*.png",
+        "state_*.json",
+        "scene_states.jsonl",
+        "ego_log.csv",
+        "safebench_scene.json",
+        "camera_calibration.json",
+    ]:
         for path in glob.glob(os.path.join(output_dir, pattern)):
             os.remove(path)
+    for camera_name, _ in CAMERA_SPECS:
+        camera_dir = os.path.join(output_dir, camera_name)
+        if os.path.isdir(camera_dir):
+            shutil.rmtree(camera_dir)
 
 
 def write_json(path, data):
@@ -204,6 +228,106 @@ def import_capture_helpers(repo_root):
     from carla_smoke.scenes.normal_driving_scene import attach_front_camera, build_scene_snapshot
 
     return attach_front_camera, build_scene_snapshot
+
+
+def attach_surround_cameras(carla, world, ego, blueprints, width, height, fov):
+    cameras = []
+    queues = {}
+    camera_bp = blueprints.find("sensor.camera.rgb")
+    camera_bp.set_attribute("image_size_x", str(width))
+    camera_bp.set_attribute("image_size_y", str(height))
+    camera_bp.set_attribute("fov", str(fov))
+
+    for camera_name, spec in CAMERA_SPECS:
+        transform = carla.Transform(
+            carla.Location(x=spec["x"], y=spec["y"], z=spec["z"]),
+            carla.Rotation(pitch=spec["pitch"], yaw=spec["yaw"], roll=spec["roll"]),
+        )
+        image_queue = queue.Queue()
+        camera = world.spawn_actor(camera_bp, transform, attach_to=ego)
+        camera.listen(lambda image, q=image_queue: q.put(image))
+        cameras.append((camera_name, camera))
+        queues[camera_name] = image_queue
+    return cameras, queues
+
+
+def drain_camera_queues(camera_queues):
+    for image_queue in camera_queues.values():
+        while not image_queue.empty():
+            image_queue.get_nowait()
+
+
+def read_surround_images(camera_queues, timeout=5.0):
+    return {camera_name: image_queue.get(timeout=timeout) for camera_name, image_queue in camera_queues.items()}
+
+
+def carla_image_to_rgb(image):
+    import numpy as np
+
+    array = np.frombuffer(image.raw_data, dtype=np.uint8)
+    array = array.reshape((image.height, image.width, 4))
+    return array[:, :, [2, 1, 0]].copy()
+
+
+def write_rgb_png(path, rgb_array):
+    height, width, channels = rgb_array.shape
+    if channels != 3:
+        raise ValueError("write_rgb_png expects an RGB array with 3 channels.")
+
+    def chunk(chunk_type, data):
+        payload = chunk_type + data
+        return struct.pack(">I", len(data)) + payload + struct.pack(">I", zlib.crc32(payload) & 0xFFFFFFFF)
+
+    raw_rows = b"".join(b"\x00" + rgb_array[row].tobytes() for row in range(height))
+    png = [
+        b"\x89PNG\r\n\x1a\n",
+        chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)),
+        chunk(b"IDAT", zlib.compress(raw_rows, level=6)),
+        chunk(b"IEND", b""),
+    ]
+    with open(path, "wb") as f:
+        f.write(b"".join(png))
+
+
+def save_surround_images_and_montage(images, output_dir, frame_idx):
+    import numpy as np
+
+    per_camera_files = {}
+    tiles = []
+    for camera_name, _ in CAMERA_SPECS:
+        image = images[camera_name]
+        camera_dir = os.path.join(output_dir, camera_name)
+        os.makedirs(camera_dir, exist_ok=True)
+        image_file = f"rgb_{frame_idx:04d}.png"
+        image_path = os.path.join(camera_dir, image_file)
+        image.save_to_disk(image_path)
+        per_camera_files[camera_name] = os.path.join(camera_name, image_file)
+        tiles.append(carla_image_to_rgb(image))
+
+    top = np.hstack(tiles[:3])
+    bottom = np.hstack(tiles[3:])
+    montage = np.vstack([top, bottom])
+    montage_file = f"rgb_{frame_idx:04d}.png"
+    write_rgb_png(os.path.join(output_dir, montage_file), montage)
+    return montage_file, per_camera_files
+
+
+def camera_calibration_metadata(width, height, fov):
+    return {
+        "camera_model": "carla_surround_rgb",
+        "layout": "2x3",
+        "tile_order": [camera_name for camera_name, _ in CAMERA_SPECS],
+        "image_width": width,
+        "image_height": height,
+        "fov": fov,
+        "cameras": {
+            camera_name: {
+                "location": {"x": spec["x"], "y": spec["y"], "z": spec["z"]},
+                "rotation": {"pitch": spec["pitch"], "yaw": spec["yaw"], "roll": spec["roll"]},
+            }
+            for camera_name, spec in CAMERA_SPECS
+        },
+    }
 
 
 def get_ego_actor(simulation):
@@ -257,8 +381,9 @@ def capture_one_safebench_scene(
     os.makedirs(args.output_dir, exist_ok=True)
 
     scenic = None
-    camera = None
+    cameras = []
     image_queue = queue.Queue()
+    camera_queues = None
     log_rows = []
     state_snapshots = []
 
@@ -286,23 +411,31 @@ def capture_one_safebench_scene(
         traffic_manager.set_random_device_seed(args.seed)
         set_ego_autopilot(ego, traffic_manager, args.ego_speed_difference)
 
-        camera = attach_front_camera(
-            carla,
-            world,
-            ego,
-            blueprints,
-            image_queue,
-            args.width,
-            args.height,
-            args.fov,
-        )
+        if args.camera_mode == "surround":
+            cameras, camera_queues = attach_surround_cameras(carla, world, ego, blueprints, args.width, args.height, args.fov)
+            write_json(os.path.join(args.output_dir, "camera_calibration.json"), camera_calibration_metadata(args.width, args.height, args.fov))
+        else:
+            camera = attach_front_camera(
+                carla,
+                world,
+                ego,
+                blueprints,
+                image_queue,
+                args.width,
+                args.height,
+                args.fov,
+            )
+            cameras = [("CAM_FRONT", camera)]
 
         update_behavior = prime_scenic_behavior(scenic)
         for _ in range(args.warmup_ticks):
             world.tick()
             simulation.updateObjects()
-            while not image_queue.empty():
-                image_queue.get_nowait()
+            if camera_queues is not None:
+                drain_camera_queues(camera_queues)
+            else:
+                while not image_queue.empty():
+                    image_queue.get_nowait()
 
         saved = 0
         for frame_idx in range(args.frames):
@@ -314,7 +447,10 @@ def capture_one_safebench_scene(
 
             world.tick()
             simulation.updateObjects()
-            image = image_queue.get(timeout=5.0)
+            if camera_queues is not None:
+                surround_images = read_surround_images(camera_queues, timeout=5.0)
+            else:
+                image = image_queue.get(timeout=5.0)
 
             ego_transform = ego.get_transform()
             speed = vector_length(ego.get_velocity())
@@ -330,8 +466,12 @@ def capture_one_safebench_scene(
             )
 
             if frame_idx % args.save_every == 0:
-                image_file = f"rgb_{frame_idx:04d}.png"
-                image.save_to_disk(os.path.join(args.output_dir, image_file))
+                per_camera_files = None
+                if camera_queues is not None:
+                    image_file, per_camera_files = save_surround_images_and_montage(surround_images, args.output_dir, frame_idx)
+                else:
+                    image_file = f"rgb_{frame_idx:04d}.png"
+                    image.save_to_disk(os.path.join(args.output_dir, image_file))
                 snapshot = build_scene_snapshot(carla, world, ego, frame_idx, image_file, args.state_radius)
                 snapshot.setdefault("source", {})
                 snapshot["source"].update(
@@ -340,8 +480,12 @@ def capture_one_safebench_scene(
                         "safebench_scenic_file": os.path.relpath(scenic_file, repo_root),
                         "safebench_scenario_index": scenario_index,
                         "scenario_description": description,
+                        "camera_mode": args.camera_mode,
                     }
                 )
+                if per_camera_files:
+                    snapshot["source"]["camera_images"] = per_camera_files
+                    snapshot["source"]["montage_layout"] = "2x3"
                 state_snapshots.append(snapshot)
                 write_json(os.path.join(args.output_dir, f"state_{frame_idx:04d}.json"), snapshot)
                 saved += 1
@@ -361,6 +505,8 @@ def capture_one_safebench_scene(
                 "frames": args.frames,
                 "save_every": args.save_every,
                 "saved_images": saved,
+                "camera_mode": args.camera_mode,
+                "camera_layout": "2x3_surround" if args.camera_mode == "surround" else "front",
                 "params": params,
             },
         )
@@ -368,7 +514,7 @@ def capture_one_safebench_scene(
         return 0
 
     finally:
-        if camera is not None:
+        for _, camera in reversed(cameras):
             try:
                 camera.stop()
             except Exception:
@@ -473,6 +619,7 @@ def main():
     parser.add_argument("--width", type=int, default=800)
     parser.add_argument("--height", type=int, default=450)
     parser.add_argument("--fov", type=float, default=90.0)
+    parser.add_argument("--camera-mode", choices=["front", "surround"], default="surround")
     parser.add_argument("--state-radius", type=float, default=80.0)
     parser.add_argument("--clean-output", action="store_true")
     parser.set_defaults(try_next_on_failure=True)

@@ -24,11 +24,12 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 PROMPT_TEMPLATE = """你是自动驾驶风险推演系统中的 L1 子智能体。
 
 输入包括：
-1. CARLA API 已经导出的 L0 场景结构化快照。L0 是几何/物理事实来源。
+1. CARLA API 已经导出的 L0 场景结构化快照；多帧模式下还会提供 sampled_l0_states。L0 是几何/物理事实来源。
 2. 可选的 Qwen 本地视觉观测 JSON。Qwen 负责看图，你不能声称自己直接看过图像，只能引用 Qwen 的视觉结论。
 
 任务：
 - 结合 L0 中的自车速度、附近 actor、相对距离、相对方位、车道、路口、天气、最近前方目标，以及 Qwen 视觉观测，推断 5 个最可能的 L1 物理风险薄弱环节。
+- 如果 sampled_l0_states 存在，必须综合多帧变化，优先关注跨帧中新出现、靠近、横穿、从侧后方进入、由遮挡区域出现的 actor，而不是只看单帧最近目标。
 - L1 只描述当前场景中的“物理风险薄弱环节”：哪里脆弱、为什么脆弱、证据是什么。
 - L1 不生成具体触发事件，不写“突然急刹/绳索断裂/行人闯入”等事件；这些属于 L2。
 - 候选包括但不限于：货物固定不稳、卡车刹车灯可见性不足、骑行者靠近机动车道、道路湿滑、自车A柱盲区、前方大型车辆遮挡视野、跟车距离不足、车道空间不足或避让空间受限、前车速度状态不确定。
@@ -79,6 +80,23 @@ def select_image(image_paths, select, image_index):
     if select == "last":
         return image_paths[-1]
     return image_paths[len(image_paths) // 2]
+
+
+def select_images(image_paths, select, image_index, sample_count):
+    if sample_count is None or sample_count <= 1:
+        return [select_image(image_paths, select, image_index)]
+    if not image_paths:
+        raise ValueError("No image files found.")
+    if image_index is not None:
+        start = max(0, min(image_index, len(image_paths) - 1))
+        return image_paths[start : start + sample_count]
+    if sample_count >= len(image_paths):
+        return image_paths
+    indexes = []
+    for idx in range(sample_count):
+        pos = round(idx * (len(image_paths) - 1) / (sample_count - 1))
+        indexes.append(int(pos))
+    return [image_paths[idx] for idx in sorted(set(indexes))]
 
 
 def frame_from_image_name(path):
@@ -178,6 +196,53 @@ def load_l0_state(image_path, state_json, ego_log):
 
     ego_log_path = ego_log or os.path.join(os.path.dirname(image_path), "ego_log.csv")
     return fallback_state_from_ego_log(image_path, ego_log_path)
+
+
+def actor_min_distance(state):
+    summary = state.get("summary", {}) if isinstance(state, dict) else {}
+    candidates = [
+        summary.get("nearest_actor_distance_m"),
+        summary.get("nearest_front_distance_m"),
+    ]
+    actors = state.get("actors", []) if isinstance(state, dict) else []
+    for actor in actors:
+        if isinstance(actor, dict):
+            candidates.append(actor.get("distance_m"))
+    numeric = []
+    for value in candidates:
+        try:
+            if value is not None:
+                numeric.append(float(value))
+        except (TypeError, ValueError):
+            pass
+    return min(numeric) if numeric else float("inf")
+
+
+def compact_sampled_state(state):
+    if not isinstance(state, dict):
+        return {}
+    return {
+        "source": state.get("source", {}),
+        "ego": state.get("ego", {}),
+        "actors": state.get("actors", []),
+        "nearest_front_actor": state.get("nearest_front_actor"),
+        "summary": state.get("summary", {}),
+    }
+
+
+def load_l0_sequence(image_paths, state_json, ego_log):
+    if state_json:
+        state = read_json(state_json)
+        return state, [state]
+    states = [load_l0_state(image_path, None, ego_log) for image_path in image_paths]
+    representative = min(states, key=actor_min_distance) if states else fallback_state_from_ego_log(image_paths[0], ego_log)
+    representative = dict(representative)
+    representative.setdefault("source", {})
+    representative["source"]["sampled_image_paths"] = [os.path.abspath(path) for path in image_paths]
+    representative["source"]["sampled_frames"] = [frame_from_image_name(path) for path in image_paths]
+    representative["source"]["sampled_state_count"] = len(states)
+    representative["sampled_l0_states"] = [compact_sampled_state(state) for state in states]
+    return representative, states
 
 
 def build_prompt(l0_state, vision_observation, scenario_hint):
@@ -327,6 +392,7 @@ def main():
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--select", choices=["first", "middle", "last"], default="middle")
     parser.add_argument("--image-index", type=int, default=None)
+    parser.add_argument("--sample-count", type=int, default=1, help="Number of evenly sampled frames used for L1 risk inference.")
     parser.add_argument("--state-json", default=None, help="Optional explicit CARLA API state JSON.")
     parser.add_argument("--ego-log", default=None, help="Fallback only when no state JSON exists.")
     parser.add_argument("--vision-json", default=None, help="Optional Qwen vision observation JSON.")
@@ -336,21 +402,27 @@ def main():
 
     image_paths = list(iter_image_paths(args.path))
     try:
-        image_path = select_image(image_paths, args.select, args.image_index)
+        selected_images = select_images(image_paths, args.select, args.image_index, args.sample_count)
     except (ValueError, IndexError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    l0_state = load_l0_state(image_path, args.state_json, args.ego_log)
+    l0_state, _ = load_l0_sequence(selected_images, args.state_json, args.ego_log)
     l0_state.setdefault("source", {})
+    representative_frame = l0_state.get("source", {}).get("frame")
+    image_path = next(
+        (path for path in selected_images if frame_from_image_name(path) == representative_frame),
+        selected_images[0],
+    )
     l0_state["source"]["selected_image_path"] = os.path.abspath(image_path)
+    l0_state["source"]["selected_image_paths"] = [os.path.abspath(path) for path in selected_images]
     vision_observation = read_json(args.vision_json) if args.vision_json and os.path.exists(args.vision_json) else None
     if vision_observation:
         l0_state["source"]["vision_observation_file"] = os.path.abspath(args.vision_json)
     prompt = build_prompt(l0_state, vision_observation, args.scenario_hint)
 
     print(f"L0 state source: {l0_state.get('source', {}).get('sensor', 'unknown')}")
-    print(f"Selected image: {image_path}")
+    print("Selected images: " + ", ".join(selected_images))
 
     raw_response = ""
     parsed = None

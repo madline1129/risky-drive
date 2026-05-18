@@ -87,10 +87,12 @@ def main():
     parser.add_argument("--timestep", type=float, default=0.05)
     parser.add_argument("--ego-speed-difference", type=float, default=-5.0)
     parser.add_argument("--weather", default="ClearNoon")
+    parser.add_argument("--camera-mode", choices=["front", "surround"], default="surround")
     parser.add_argument("--town", default=None, help="Town for L4 replay. Defaults to the L0 source map captured from Scenic.")
     parser.add_argument("--workdir-root", default=default_workdir_root)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--select", choices=["first", "middle", "last"], default="middle")
+    parser.add_argument("--sample-count", type=int, default=5, help="Number of saved frames sampled for multi-frame vision and L1 inference.")
     parser.add_argument("--scenario-hint", default="")
     parser.add_argument("--model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--deepseek-url", default=DEFAULT_DEEPSEEK_URL)
@@ -168,6 +170,8 @@ def main():
             str(args.ego_speed_difference),
             "--weather",
             args.weather,
+            "--camera-mode",
+            args.camera_mode,
             "--output-dir",
             image_dir,
         ]
@@ -196,6 +200,8 @@ def main():
             str(args.vision_timeout),
             "--select",
             args.select,
+            "--sample-count",
+            str(args.sample_count),
             "--output-dir",
             vision_dir,
         ]
@@ -216,6 +222,8 @@ def main():
             str(args.timeout),
             "--select",
             args.select,
+            "--sample-count",
+            str(args.sample_count),
             "--output-dir",
             l0_dir,
         ]
@@ -337,6 +345,8 @@ def main():
             "scenario_index": args.scenario_index,
             "frames": args.frames,
             "save_every": args.save_every,
+            "camera_mode": args.camera_mode,
+            "sample_count": args.sample_count,
             "seed": args.seed,
             "timestep": args.timestep,
             "weather": args.weather,
