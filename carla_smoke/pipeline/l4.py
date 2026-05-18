@@ -425,6 +425,18 @@ def run_command(command, capture_output=False):
     return ""
 
 
+def normalize_opencode_model_name(model):
+    if not model:
+        return model
+    if model == "ds-v4-pro":
+        return "deepseek/deepseek-v4-pro"
+    if "/" in model:
+        return model
+    if model.startswith("deepseek"):
+        return f"deepseek/{model}"
+    return model
+
+
 def copy_tree_contents(src_dir, dst_dir):
     if not os.path.isdir(src_dir):
         raise RuntimeError(f"Required directory not found: {src_dir}")
@@ -613,7 +625,7 @@ Task:
 - Do not choose an unrelated spawn point when L0 ego.location/rotation is available.
 - Follow carla_plan.actor_motion_plan exactly. L0 gives the initial picture; actor_motion_plan gives what every actor should do after L0.
 - Do not invent actor behavior that contradicts actor_motion_plan.
-- The script must connect to CARLA 0.9.15, reconstruct the L0 ego/front/relevant actors, and execute the requested risk event from carla_plan.
+- The script must connect to the configured CARLA server using the installed CARLA Python API, reconstruct the L0 ego/front/relevant actors, and execute the requested risk event from carla_plan.
 - Save front-camera images into the --output-dir argument as risk_rgb_XXXX.png.
 - Write --output-dir/event_trace.json exactly as required by scenario_config.event_contract. The trace must prove that this chain's physical event was applied.
 - Keep the script self-contained. Do not require project imports.
@@ -671,11 +683,12 @@ def run_opencode(args, config_path):
     with open(prompt_path, "w", encoding="utf-8") as f:
         f.write(prompt)
 
+    opencode_model = normalize_opencode_model_name(args.opencode_model)
     command = [
         opencode_bin,
         "run",
         "--model",
-        args.opencode_model,
+        opencode_model,
         "--dir",
         workspace,
         prompt,
@@ -702,11 +715,12 @@ def repair_generated_script(args, config_path, script_path, error_output):
     with open(repair_prompt_path, "w", encoding="utf-8") as f:
         f.write(repair_prompt)
 
+    opencode_model = normalize_opencode_model_name(args.opencode_model)
     command = [
         opencode_bin,
         "run",
         "--model",
-        args.opencode_model,
+        opencode_model,
         "--dir",
         workspace,
         repair_prompt,

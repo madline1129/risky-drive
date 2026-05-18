@@ -3,5 +3,5 @@ python carla_smoke/pipeline/run.py \
   --env-file .env \
   --code-agent opencode \
   --opencode-bin opencode \
-  --opencode-model deepseek/deepseek-v4-flash \
+  --opencode-model deepseek-v4-pro \
   --l4-all-chains
