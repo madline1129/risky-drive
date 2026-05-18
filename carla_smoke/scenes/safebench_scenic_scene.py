@@ -475,11 +475,18 @@ def main():
     parser.add_argument("--fov", type=float, default=90.0)
     parser.add_argument("--state-radius", type=float, default=80.0)
     parser.add_argument("--clean-output", action="store_true")
+    parser.set_defaults(try_next_on_failure=True)
     parser.add_argument(
         "--try-next-on-failure",
-        action=argparse.BooleanOptionalAction,
-        default=True,
+        dest="try_next_on_failure",
+        action="store_true",
         help="If a selected .scenic file fails during sampling/simulation, try following files in the same directory.",
+    )
+    parser.add_argument(
+        "--no-try-next-on-failure",
+        dest="try_next_on_failure",
+        action="store_false",
+        help="Fail immediately instead of trying following .scenic files.",
     )
     args = parser.parse_args()
     return capture_safebench_scene(args)
