@@ -65,9 +65,11 @@ def main():
     parser.add_argument("--opencode-bin", default="opencode")
     parser.add_argument("--opencode-model", default="deepseek-v4-pro")
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
-    parser.add_argument("--l4-frames", type=int, default=140)
+    parser.add_argument("--l4-frames", type=int, default=180)
     parser.add_argument("--l4-save-every", type=int, default=5)
-    parser.add_argument("--validate-event-trace", action="store_true")
+    parser.add_argument("--l4-local-trigger-frame", type=int, default=20, help="Start each generated event 1s into the L4 replay by default.")
+    parser.add_argument("--l4-pre-trigger-seconds", type=float, default=2.0, help="Reconstruct from about 2s before the closest-risk source frame.")
+    parser.add_argument("--skip-event-trace-validation", action="store_true")
     parser.add_argument("--stop-on-chain-error", action="store_true", help="Stop all-chain execution when one L4 chain fails.")
     parser.add_argument("--extra-arg", action="append", default=[], help="Additional raw argument passed to run_safebench.py. May be repeated.")
     args = parser.parse_args()
@@ -132,6 +134,10 @@ def main():
         str(args.l4_frames),
         "--l4-save-every",
         str(args.l4_save_every),
+        "--l4-local-trigger-frame",
+        str(args.l4_local_trigger_frame),
+        "--l4-pre-trigger-seconds",
+        str(args.l4_pre_trigger_seconds),
         "--l4-all-chains",
     ]
     if args.carla_python:
@@ -142,7 +148,7 @@ def main():
         command.extend(["--run-id", args.run_id])
     if args.env_file:
         command.extend(["--env-file", args.env_file])
-    if args.validate_event_trace:
+    if not args.skip_event_trace_validation:
         command.append("--validate-event-trace")
     if not args.stop_on_chain_error:
         command.append("--continue-on-chain-error")

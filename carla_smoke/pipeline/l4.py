@@ -90,6 +90,161 @@ def compact_l0_scene(l0_state):
     }
 
 
+def frame_from_state(state):
+    try:
+        frame = (state.get("source") or {}).get("frame")
+        return int(frame) if frame is not None else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def actor_min_distance(state):
+    if not isinstance(state, dict):
+        return float("inf")
+    summary = state.get("summary", {}) if isinstance(state.get("summary"), dict) else {}
+    candidates = [summary.get("nearest_actor_distance_m"), summary.get("nearest_front_distance_m")]
+    nearest_front = state.get("nearest_front_actor")
+    if isinstance(nearest_front, dict):
+        candidates.extend(
+            [
+                nearest_front.get("distance_m"),
+                nearest_front.get("relative_longitudinal_m"),
+            ]
+        )
+    actors = state.get("actors", []) if isinstance(state.get("actors"), list) else []
+    for actor in actors:
+        if isinstance(actor, dict):
+            candidates.append(actor.get("distance_m"))
+    numeric = []
+    for value in candidates:
+        try:
+            if value is not None:
+                numeric.append(abs(float(value)))
+        except (TypeError, ValueError):
+            pass
+    return min(numeric) if numeric else float("inf")
+
+
+def timeline_states_from_l0(l0_state):
+    if not isinstance(l0_state, dict):
+        return []
+    for key in ("l4_timeline_states", "sampled_l0_states"):
+        states = l0_state.get(key)
+        if isinstance(states, list) and states:
+            return [state for state in states if isinstance(state, dict)]
+    return [l0_state]
+
+
+def select_reconstruction_state(l0_state, pre_trigger_seconds=2.0, source_timestep=0.05):
+    states = timeline_states_from_l0(l0_state)
+    if not states:
+        return l0_state, {
+            "selection_reason": "no_l0_timeline_available",
+            "risk_peak_frame": None,
+            "reconstruction_frame": frame_from_state(l0_state) if isinstance(l0_state, dict) else None,
+        }
+
+    states = sorted(states, key=lambda state: frame_from_state(state) if frame_from_state(state) is not None else 10**12)
+    peak_state = min(states, key=actor_min_distance)
+    peak_frame = frame_from_state(peak_state)
+    peak_distance = actor_min_distance(peak_state)
+
+    selected = peak_state
+    target_frame = None
+    if peak_frame is not None:
+        retreat_ticks = max(1, int(round(float(pre_trigger_seconds) / float(source_timestep or 0.05))))
+        target_frame = peak_frame - retreat_ticks
+        earlier = [state for state in states if frame_from_state(state) is not None and frame_from_state(state) <= target_frame]
+        if earlier:
+            selected = max(earlier, key=lambda state: frame_from_state(state))
+        else:
+            before_peak = [state for state in states if frame_from_state(state) is not None and frame_from_state(state) < peak_frame]
+            if before_peak:
+                selected = before_peak[0]
+
+    return selected, {
+        "selection_reason": "pre_event_frame_before_min_actor_distance",
+        "risk_peak_frame": peak_frame,
+        "risk_peak_distance_m": None if peak_distance == float("inf") else round(peak_distance, 3),
+        "target_pre_event_frame": target_frame,
+        "reconstruction_frame": frame_from_state(selected),
+        "available_timeline_frames": [frame_from_state(state) for state in states if frame_from_state(state) is not None],
+        "pre_trigger_seconds": pre_trigger_seconds,
+        "source_timestep": source_timestep,
+    }
+
+
+def replace_nested_trigger_frames(value, trigger_frame, original_trigger_frame=None):
+    if isinstance(value, dict):
+        updated = {}
+        for key, item in value.items():
+            if key == "trigger_frame":
+                updated[key] = trigger_frame
+            else:
+                updated[key] = replace_nested_trigger_frames(item, trigger_frame, original_trigger_frame)
+        return updated
+    if isinstance(value, list):
+        return [replace_nested_trigger_frames(item, trigger_frame, original_trigger_frame) for item in value]
+    if isinstance(value, str) and original_trigger_frame is not None:
+        return value.replace(f"frame_{original_trigger_frame}", f"frame_{trigger_frame}")
+    return value
+
+
+def clamp_local_trigger_frame(requested_trigger_frame, l4_frames):
+    frame_count = max(1, int(l4_frames or 1))
+    trigger = max(1, int(requested_trigger_frame or 20))
+    if trigger >= frame_count:
+        trigger = max(1, frame_count // 4)
+    return trigger
+
+
+def ego_speed_mps_from_state(state):
+    try:
+        return float(((state or {}).get("ego") or {}).get("speed_mps") or 0.0)
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+
+
+def adapt_actor_motion_plan_to_reconstruction(plan, reconstruction_state):
+    plan = dict(plan)
+    motion_plan = plan.get("actor_motion_plan")
+    if not isinstance(motion_plan, dict):
+        return plan
+
+    scenario_type = plan.get("scenario_type")
+    if scenario_type not in {"vulnerable_actor_intrusion", "road_obstacle_intrusion", "cargo_drop", "front_vehicle_brake"}:
+        return plan
+
+    ego_plan = motion_plan.get("ego")
+    if not isinstance(ego_plan, dict):
+        return plan
+
+    source_speed = ego_speed_mps_from_state(reconstruction_state)
+    target_speed = max(2.0, min(5.0, source_speed if source_speed > 0.5 else 3.0))
+    behavior = str(ego_plan.get("behavior", "")).lower()
+    try:
+        planned_speed = float(ego_plan.get("target_speed_mps", target_speed) or 0.0)
+    except (TypeError, ValueError):
+        planned_speed = 0.0
+
+    should_fix_stale_stop = "stay_stopped" in behavior or "stopped" in behavior or planned_speed <= 0.1
+    if should_fix_stale_stop:
+        ego_plan = dict(ego_plan)
+        ego_plan.update(
+            {
+                "behavior": "slow_approach_until_trigger_then_react",
+                "target_speed_mps": round(target_speed, 3),
+                "avoid_collision": True,
+                "must_remain_moving_until_trigger": True,
+                "derived_from_reconstruction_frame_speed_mps": round(source_speed, 3),
+            }
+        )
+        motion_plan = dict(motion_plan)
+        motion_plan["ego"] = ego_plan
+        plan["actor_motion_plan"] = motion_plan
+    return plan
+
+
 def normalize_l4_plan(plan):
     if not isinstance(plan, dict):
         plan = {}
@@ -378,9 +533,40 @@ def build_event_contract(plan):
     return base
 
 
-def build_config(chain, l0_state=None, l0_json_path=None):
-    plan = normalize_l4_plan(chain.get("carla_plan", {}))
-    scene_reconstruction = compact_l0_scene(l0_state)
+def build_config(
+    chain,
+    l0_state=None,
+    l0_json_path=None,
+    l4_frames=140,
+    local_trigger_frame=20,
+    pre_trigger_seconds=2.0,
+    source_timestep=0.05,
+):
+    raw_plan = chain.get("carla_plan", {})
+    original_trigger_frame = int((raw_plan or {}).get("trigger_frame", 45) or 45)
+    plan = normalize_l4_plan(raw_plan)
+    local_trigger_frame = clamp_local_trigger_frame(local_trigger_frame, l4_frames)
+    plan = replace_nested_trigger_frames(plan, local_trigger_frame, original_trigger_frame)
+    plan["original_l3_trigger_frame"] = original_trigger_frame
+    plan["trigger_frame_semantics"] = "local_l4_frame_after_scene_reconstruction"
+
+    reconstruction_state, time_axis_policy = select_reconstruction_state(
+        l0_state,
+        pre_trigger_seconds=pre_trigger_seconds,
+        source_timestep=source_timestep,
+    )
+    plan = adapt_actor_motion_plan_to_reconstruction(plan, reconstruction_state)
+    time_axis_policy.update(
+        {
+            "local_trigger_frame": local_trigger_frame,
+            "l4_frames": l4_frames,
+            "rule": (
+                "Reconstruct from reconstruction_frame, then apply carla_plan.trigger_frame "
+                "as a local L4 frame. Do not treat original_l3_trigger_frame as a local frame."
+            ),
+        }
+    )
+    scene_reconstruction = compact_l0_scene(reconstruction_state)
     return {
         "level": "L4",
         "name": "CARLA代码执行",
@@ -392,9 +578,11 @@ def build_config(chain, l0_state=None, l0_json_path=None):
         "direct_physical_outcome": chain.get("direct_physical_outcome"),
         "truck_distance": 18.0,
         "trigger_frame": plan.get("trigger_frame", 45),
+        "original_l3_trigger_frame": original_trigger_frame,
         "carla_plan": plan,
         "event_contract": build_event_contract(plan),
         "scene_reconstruction": scene_reconstruction,
+        "time_axis_policy": time_axis_policy,
         "reconstruction_policy": {
             "base_scene": "Reconstruct the L4 risk scene from L0 state instead of choosing unrelated spawn points.",
             "town": "Use source_map from L0 when available; otherwise use --town.",
@@ -622,6 +810,8 @@ Task:
   {output_script}
 - Replace the NotImplementedError with scenario-specific behavior from scenario_config.json.
 - Reconstruct the scene from L0 scene_reconstruction/source state: preserve town/map, weather, ego pose, nearest front actor, and relevant nearby actors as much as CARLA spawn constraints allow.
+- Treat carla_plan.trigger_frame as a local frame in the generated L4 simulation, not as an original SafeBench global frame.
+- Follow scenario_config.time_axis_policy: start from scene_reconstruction.source_frame, trigger at local_trigger_frame, then continue until --frames.
 - Do not choose an unrelated spawn point when L0 ego.location/rotation is available.
 - Follow carla_plan.actor_motion_plan exactly. L0 gives the initial picture; actor_motion_plan gives what every actor should do after L0.
 - Do not invent actor behavior that contradicts actor_motion_plan.
@@ -957,7 +1147,15 @@ def run_generated_script_with_repair(args, config_path, script_path, images_dir)
 
 
 def execute_chain(args, chain, l0_state, chain_dir):
-    config = build_config(chain, l0_state, args.l0_json)
+    config = build_config(
+        chain,
+        l0_state,
+        args.l0_json,
+        l4_frames=args.frames,
+        local_trigger_frame=args.local_trigger_frame,
+        pre_trigger_seconds=args.pre_trigger_seconds,
+        source_timestep=args.source_timestep,
+    )
     config["code_agent"] = args.code_agent
 
     os.makedirs(chain_dir, exist_ok=True)
@@ -1028,6 +1226,9 @@ def main():
     parser.add_argument("--town", default="Town03")
     parser.add_argument("--frames", type=int, default=140)
     parser.add_argument("--save-every", type=int, default=5)
+    parser.add_argument("--local-trigger-frame", type=int, default=20, help="Local L4 frame at which the generated risk event should begin.")
+    parser.add_argument("--pre-trigger-seconds", type=float, default=2.0, help="Choose an L0 reconstruction frame this many seconds before the closest-risk frame when possible.")
+    parser.add_argument("--source-timestep", type=float, default=0.05, help="Timestep used by the source SafeBench capture for frame-to-second conversion.")
     parser.add_argument("--execute", action="store_true", help="Run CARLA executor to produce risk images.")
     parser.add_argument("--code-agent", choices=["template", "opencode"], default="opencode")
     parser.add_argument("--opencode-bin", default="opencode")

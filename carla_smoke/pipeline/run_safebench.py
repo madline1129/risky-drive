@@ -112,6 +112,8 @@ def main():
     parser.add_argument("--continue-on-chain-error", action="store_true", help="When running all L4 chains, continue if one generated risk scene fails.")
     parser.add_argument("--l4-frames", type=int, default=140)
     parser.add_argument("--l4-save-every", type=int, default=5)
+    parser.add_argument("--l4-local-trigger-frame", type=int, default=20)
+    parser.add_argument("--l4-pre-trigger-seconds", type=float, default=2.0)
     parser.add_argument("--validate-event-trace", action="store_true")
     parser.add_argument("--code-agent", choices=["template", "opencode"], default="opencode")
     parser.add_argument("--opencode-bin", default="opencode")
@@ -305,6 +307,12 @@ def main():
                         str(args.l4_frames),
                         "--save-every",
                         str(args.l4_save_every),
+                        "--local-trigger-frame",
+                        str(args.l4_local_trigger_frame),
+                        "--pre-trigger-seconds",
+                        str(args.l4_pre_trigger_seconds),
+                        "--source-timestep",
+                        str(args.timestep),
                         "--code-agent",
                         args.code_agent,
                         "--opencode-bin",
@@ -355,6 +363,8 @@ def main():
             "weather": args.weather,
             "l4_town": args.town or "from_l0_source_map",
             "l4_code_agent": args.code_agent,
+            "l4_local_trigger_frame": args.l4_local_trigger_frame,
+            "l4_pre_trigger_seconds": args.l4_pre_trigger_seconds,
         },
     }
     write_manifest(os.path.join(run_dir, "manifest.json"), manifest)

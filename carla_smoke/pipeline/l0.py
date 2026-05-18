@@ -224,13 +224,15 @@ def compact_sampled_state(state):
     return {
         "source": state.get("source", {}),
         "ego": state.get("ego", {}),
+        "road": state.get("road", {}),
+        "weather": state.get("weather", {}),
         "actors": state.get("actors", []),
         "nearest_front_actor": state.get("nearest_front_actor"),
         "summary": state.get("summary", {}),
     }
 
 
-def load_l0_sequence(image_paths, state_json, ego_log):
+def load_l0_sequence(image_paths, state_json, ego_log, all_image_paths=None):
     if state_json:
         state = read_json(state_json)
         return state, [state]
@@ -242,6 +244,9 @@ def load_l0_sequence(image_paths, state_json, ego_log):
     representative["source"]["sampled_frames"] = [frame_from_image_name(path) for path in image_paths]
     representative["source"]["sampled_state_count"] = len(states)
     representative["sampled_l0_states"] = [compact_sampled_state(state) for state in states]
+    timeline_paths = all_image_paths or image_paths
+    timeline_states = [load_l0_state(image_path, None, ego_log) for image_path in timeline_paths]
+    representative["l4_timeline_states"] = [compact_sampled_state(state) for state in timeline_states]
     return representative, states
 
 
@@ -407,7 +412,7 @@ def main():
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    l0_state, _ = load_l0_sequence(selected_images, args.state_json, args.ego_log)
+    l0_state, _ = load_l0_sequence(selected_images, args.state_json, args.ego_log, image_paths)
     l0_state.setdefault("source", {})
     representative_frame = l0_state.get("source", {}).get("frame")
     image_path = next(
