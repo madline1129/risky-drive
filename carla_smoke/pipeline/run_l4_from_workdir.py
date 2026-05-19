@@ -68,6 +68,12 @@ def main():
     parser.add_argument("--opencode-bin", default="opencode")
     parser.add_argument("--opencode-model", default="deepseek-v4-pro")
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
+    parser.add_argument("--skip-plan-agent", action="store_true")
+    parser.add_argument("--plan-model", default="deepseek-v4-pro")
+    parser.add_argument("--plan-url", default="https://api.deepseek.com/chat/completions")
+    parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
+    parser.add_argument("--env-file", default=None)
+    parser.add_argument("--plan-timeout", type=float, default=300.0)
     args = parser.parse_args()
 
     run_dir = os.path.abspath(args.run_dir)
@@ -116,7 +122,19 @@ def main():
         args.opencode_model,
         "--opencode-repair-attempts",
         str(args.opencode_repair_attempts),
+        "--plan-model",
+        args.plan_model,
+        "--plan-url",
+        args.plan_url,
+        "--api-key-env",
+        args.api_key_env,
+        "--plan-timeout",
+        str(args.plan_timeout),
     ]
+    if args.skip_plan_agent:
+        command.append("--skip-plan-agent")
+    if args.env_file:
+        command.extend(["--env-file", args.env_file])
     if not args.no_execute and args.execute:
         command.append("--execute")
     if args.chain_index is None:

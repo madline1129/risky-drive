@@ -11,26 +11,28 @@ Use this skill when asked to create or fix `generated_risk_scene.py` for the Cha
 
 1. Read `scenario_config.json` in the current workspace.
 2. If `l0_state.json` exists, read it before designing the scene. Treat it as the source of truth for map, weather, ego pose, nearest front actor, and relevant nearby actors.
-3. Read `scenario_config.risk_object_spec`. This is the concrete translation of the one object that receives the risk perturbation. Implement that object/action first.
-4. Read `carla_plan.actor_motion_plan` in `scenario_config.json`. Treat it as the source of truth for each actor's behavior after the L0 snapshot.
-5. Read `reference_executor.py` before editing. Reuse its CARLA import, synchronous mode, camera, cleanup, and generic spawn patterns only.
-6. Read `context/failure_history.md` before designing the scene. Avoid every listed failure mode.
-7. Edit only `generated_risk_scene.py` unless the user explicitly asks otherwise.
-8. Keep the script self-contained. Do not import project modules.
-9. Preserve these CLI arguments: `--carla-root`, `--host`, `--port`, `--town`, `--output-dir`, `--frames`, `--save-every`.
-10. The script must default to reading `scenario_config.json` from its own directory.
-11. Save risk frames as `risk_rgb_XXXX.png` in `--output-dir`. Follow `physical_task.visualization`; by default each top-level risk image must be a six-view 2x3 ego-camera montage, not a front-only camera.
-12. Write `event_trace.json` in `--output-dir` according to `scenario_config.event_contract`.
-13. Use CARLA synchronous mode with `fixed_delta_seconds = 0.05`, and restore original world settings in `finally`.
-14. Destroy all spawned actors in reverse order in `finally`.
-15. Before finishing, make sure the script would pass `python -m py_compile generated_risk_scene.py` and `python generated_risk_scene.py --help`.
-16. Replace any seed `NotImplementedError` with the exact scenario behavior requested by `carla_plan.scenario_type`.
+3. Read `scenario_config.object_registry` and `scenario_config.l4_plan_agent` if present. These identify the primary risk object and background participants.
+4. Read `scenario_config.risk_object_spec`. This is the concrete translation of the one object that receives the risk perturbation. Implement that object/action first.
+5. Read `carla_plan.actor_motion_plan` in `scenario_config.json`. Treat it as the source of truth for each actor's behavior after the L0 snapshot.
+6. Read `reference_executor.py` before editing. Reuse its CARLA import, synchronous mode, camera, cleanup, and generic spawn patterns only.
+7. Read `context/failure_history.md` before designing the scene. Avoid every listed failure mode.
+8. Edit only `generated_risk_scene.py` unless the user explicitly asks otherwise.
+9. Keep the script self-contained. Do not import project modules.
+10. Preserve these CLI arguments: `--carla-root`, `--host`, `--port`, `--town`, `--output-dir`, `--frames`, `--save-every`.
+11. The script must default to reading `scenario_config.json` from its own directory.
+12. Save risk frames as `risk_rgb_XXXX.png` in `--output-dir`. Follow `physical_task.visualization`; by default each top-level risk image must be a six-view 2x3 ego-camera montage, not a front-only camera.
+13. Write `event_trace.json` in `--output-dir` according to `scenario_config.event_contract`.
+14. Use CARLA synchronous mode with `fixed_delta_seconds = 0.05`, and restore original world settings in `finally`.
+15. Destroy all spawned actors in reverse order in `finally`.
+16. Before finishing, make sure the script would pass `python -m py_compile generated_risk_scene.py` and `python generated_risk_scene.py --help`.
+17. Replace any seed `NotImplementedError` with the exact scenario behavior requested by `carla_plan.scenario_type`.
 
 ## Guardrails
 
 - Import CARLA through a helper that adds PythonAPI egg/whl paths before `import carla`.
 - Do not reference a global `carla` variable before importing it.
 - Respect `carla_plan.scenario_type` exactly. Do not merge unrelated event types.
+- Respect `object_registry`: background/occluder/affected actors must not become the primary risk event.
 - Treat `risk_object_spec.primary_object` as the only primary risk object. Strengthen that object/action; do not substitute a different object because it is easier to script.
 - Use `event_contract` as a hard acceptance contract. The script must execute that event and record trace fields proving it.
 - Treat `event_contract.primary_actor` as the event owner. Background actors can occlude or provide context, but must not become the main event.

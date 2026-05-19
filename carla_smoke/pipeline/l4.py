@@ -11,7 +11,85 @@ import sys
 import textwrap
 import struct
 
+try:
+    from deepseek_client import (
+        DEFAULT_DEEPSEEK_MODEL,
+        DEFAULT_DEEPSEEK_URL,
+        DeepSeekError,
+        chat_json,
+        get_api_key,
+        parse_json_response,
+    )
+except ImportError:
+    from .deepseek_client import (
+        DEFAULT_DEEPSEEK_MODEL,
+        DEFAULT_DEEPSEEK_URL,
+        DeepSeekError,
+        chat_json,
+        get_api_key,
+        parse_json_response,
+    )
+
 REPAIR_ATTEMPTS = 3
+
+
+PLAN_AGENT_PROMPT_TEMPLATE = """你是 L4 PlanAgent：把自然语言事故链翻译成可执行 CARLA 物理计划。
+
+你不是事故链生成器，不要编新故事；你只负责把输入的 L1/L2/L3 语义、L0 场景事实、物体清单翻译成严格的执行计划和物体约束。
+
+硬性原则：
+- 不要改变 L3 的核心事故链。
+- 如果输入里已有 primary_perturbation_object / perturbation_target / object_registry，必须优先继承。
+- scenario_type 必须是以下之一：front_vehicle_brake, cargo_drop, vulnerable_actor_intrusion, road_obstacle_intrusion, side_vehicle_intrusion。
+- front_vehicle_brake 的 primary_object 必须是 vehicle，优先 same_lane_as_ego=true 且 relative_longitudinal_m>0 的 L0 actor；禁止 pedestrian/walker 作为 primary。
+- vulnerable_actor_intrusion 的 primary_object 必须是 pedestrian/walker/cyclist 或 generated vulnerable actor。
+- cargo_drop 的 primary_object 必须是 generated payload；carrier 可以是前方 vehicle，但 primary 不是前车本身。
+- side_vehicle_intrusion 的 primary_object 必须是 L0 侧方 vehicle。
+- road_obstacle_intrusion 的 primary_object 必须是 obstacle/generated object，不能退化成前车刹车。
+- chain_participants 可以列多个物体，但只有 primary_object 能驱动主风险事件；背景物体不得抢主事件。
+
+只输出 JSON 对象，不要 Markdown。格式：
+{
+  "level": "L4Plan",
+  "scenario_type": "front_vehicle_brake",
+  "translation_reason": "为什么这样翻译",
+  "object_registry": {
+    "primary_object": {
+      "source": "l0_actor/generated_object/l0_ego",
+      "actor_id": 123,
+      "kind": "vehicle/pedestrian/payload/obstacle/ego",
+      "role": "front_vehicle",
+      "must_drive_primary_event": true,
+      "selection_reason": "引用 L0 字段说明为什么选它"
+    },
+    "participants": [
+      {
+        "source": "l0_actor/l0_ego/generated_object",
+        "actor_id": "ego",
+        "kind": "ego",
+        "role": "affected_actor",
+        "must_drive_primary_event": false
+      }
+    ]
+  },
+  "carla_plan": {
+    "scenario_type": "front_vehicle_brake",
+    "primary_actor_id": 123,
+    "primary_actor_source": "l0_actor",
+    "target_actor": "front_vehicle",
+    "trigger_frame": 45,
+    "expected_visual_result": "简短说明",
+    "actor_motion_plan": {
+      "ego": {"role": "observer/follower", "behavior": "具体行为"},
+      "primary_actor": {"role": "front_actor/payload/walker/side_vehicle/obstacle", "behavior": "具体行为", "trigger_frame": 45},
+      "background_actors": {"behavior": "preserve_or_ignore", "must_not_drive_primary_event": true}
+    }
+  },
+  "success_criteria": {
+    "一句话或字段": "关键验收约束"
+  }
+}
+"""
 
 
 def read_json(path):
@@ -377,6 +455,188 @@ def nearest_front_actor(scene_reconstruction):
     return actor if isinstance(actor, dict) else None
 
 
+def is_vehicle_actor(actor):
+    if not isinstance(actor, dict):
+        return False
+    kind = str(actor.get("kind", "")).lower()
+    type_id = str(actor.get("type_id", "")).lower()
+    return kind == "vehicle" or type_id.startswith("vehicle.")
+
+
+def is_front_actor(actor):
+    if not isinstance(actor, dict):
+        return False
+    try:
+        rel_long = float(actor.get("relative_longitudinal_m"))
+    except (TypeError, ValueError):
+        return "front" in str(actor.get("relative_position", "")).lower()
+    return rel_long > 0.0
+
+
+def find_front_vehicle(scene_reconstruction):
+    actors = (scene_reconstruction or {}).get("actors", [])
+    if not isinstance(actors, list):
+        actors = []
+    candidates = [actor for actor in actors if is_vehicle_actor(actor) and is_front_actor(actor)]
+    if not candidates:
+        nearest = nearest_front_actor(scene_reconstruction)
+        if is_vehicle_actor(nearest) and is_front_actor(nearest):
+            return nearest
+        return None
+
+    def score(actor):
+        same_lane = 0 if actor.get("same_lane_as_ego") else 1
+        lateral = abs(as_float(actor.get("relative_lateral_m"), 99.0))
+        longitudinal = abs(as_float(actor.get("relative_longitudinal_m"), actor.get("distance_m") or 99.0))
+        distance = abs(as_float(actor.get("distance_m"), longitudinal))
+        return (same_lane, lateral, longitudinal, distance)
+
+    return min(candidates, key=score)
+
+
+def chain_object_registry(chain):
+    for key in ("object_registry", "chain_participants"):
+        value = chain.get(key) if isinstance(chain, dict) else None
+        if isinstance(value, (dict, list)):
+            return value
+    collected = {}
+    for key in ("primary_perturbation_object", "perturbation_target", "risk_object", "primary_object"):
+        value = chain.get(key) if isinstance(chain, dict) else None
+        if isinstance(value, dict):
+            collected[key] = value
+    return collected or None
+
+
+def build_l4_plan_agent_prompt(chain, l0_state, reconstruction_state):
+    context = {
+        "l3_chain": chain,
+        "l0_state_snapshot": compact_l0_scene(l0_state) if isinstance(l0_state, dict) else None,
+        "selected_reconstruction_state": compact_l0_scene(reconstruction_state) if isinstance(reconstruction_state, dict) else None,
+        "inherited_object_registry": chain_object_registry(chain),
+    }
+    return PLAN_AGENT_PROMPT_TEMPLATE + "\n\n输入 JSON：\n" + json.dumps(context, ensure_ascii=False, indent=2)
+
+
+def run_l4_plan_agent(args, chain, l0_state, reconstruction_state):
+    prompt = build_l4_plan_agent_prompt(chain, l0_state, reconstruction_state)
+    api_key = get_api_key(args.api_key_env, args.env_file)
+    raw_response = chat_json(args.plan_url, args.plan_model, api_key, prompt, args.plan_timeout)
+    return parse_json_response(raw_response), raw_response
+
+
+def plan_from_l4_plan_agent_output(output):
+    if not isinstance(output, dict):
+        return {}
+    plan = output.get("carla_plan")
+    if isinstance(plan, dict):
+        return plan
+    nested = output.get("l4_plan")
+    if isinstance(nested, dict) and isinstance(nested.get("carla_plan"), dict):
+        return nested["carla_plan"]
+    return {}
+
+
+def merge_plan_with_agent_output(base_plan, agent_output):
+    agent_plan = plan_from_l4_plan_agent_output(agent_output)
+    if not agent_plan:
+        return base_plan
+    merged = dict(base_plan or {})
+    merged.update(agent_plan)
+    if agent_output.get("scenario_type") and "scenario_type" not in agent_plan:
+        merged["scenario_type"] = agent_output["scenario_type"]
+    registry = agent_output.get("object_registry")
+    if isinstance(registry, dict):
+        primary = registry.get("primary_object")
+        if isinstance(primary, dict):
+            if primary.get("actor_id") is not None:
+                merged.setdefault("primary_actor_id", primary.get("actor_id"))
+            if primary.get("source") is not None:
+                merged.setdefault("primary_actor_source", primary.get("source"))
+            if primary.get("kind") is not None:
+                merged.setdefault("primary_actor_kind", primary.get("kind"))
+            if primary.get("role") is not None:
+                merged.setdefault("primary_actor_role", primary.get("role"))
+    return merged
+
+
+def fallback_raw_plan_from_chain_text(chain):
+    text = " ".join(
+        str((chain or {}).get(key, ""))
+        for key in ("chain_description", "direct_physical_outcome", "parent_l2_trigger", "parent_l1_name")
+    )
+    if any(keyword in text for keyword in ["急刹", "减速", "停滞", "刹车", "追尾", "跟车"]):
+        return {
+            "scenario_type": "front_vehicle_brake",
+            "target_actor": "front_vehicle",
+            "trigger_frame": 45,
+            "brake_intensity": 1.0,
+            "deceleration_mps2": 6.0,
+            "target_speed_mps": 0.0,
+            "expected_visual_result": "前车在自车前方突然减速或接近停止，自车前向距离快速压缩",
+        }
+    if any(keyword in text for keyword in ["行人", "骑行", "自行车", "弱势", "横穿", "闯入", "滑倒"]):
+        return {
+            "scenario_type": "vulnerable_actor_intrusion",
+            "actor_type": "walker",
+            "trigger_frame": 45,
+            "spawn_relative_to": "ego_lane_right",
+            "start_position": {"x": 18.0, "y": 4.0, "z": 0.2},
+            "crossing_direction": "right_to_left",
+            "speed_mps": 2.2,
+        }
+    if any(keyword in text for keyword in ["货物", "钢筋", "金属管", "掉落", "滑落", "绳索", "固定"]):
+        return {
+            "scenario_type": "cargo_drop",
+            "target_actor": "front_vehicle",
+            "object_type": "metal_pipe",
+            "object_count": 5,
+            "trigger_frame": 45,
+            "spawn_relative_to": "front_vehicle",
+            "initial_position": {"x": -3.2, "y": 0.0, "z": 2.4},
+            "motion": {
+                "mode": "scripted_projectile",
+                "direction": "toward_ego",
+                "back_speed_mps": 8.0,
+                "lateral_drift_mps": 0.2,
+                "gravity": True,
+            },
+        }
+    if any(keyword in text for keyword in ["侧方", "变道", "横向", "侵入", "并线"]):
+        return {
+            "scenario_type": "side_vehicle_intrusion",
+            "trigger_frame": 45,
+            "motion": {"mode": "lateral_shift_toward_ego_lane", "duration_s": 1.0, "distance_m": 1.5},
+        }
+    return {
+        "scenario_type": "road_obstacle_intrusion",
+        "object_type": "road_obstacle",
+        "trigger_frame": 45,
+        "spawn_relative_to": "front_of_ego",
+        "initial_position": {"x": 14.0, "y": 0.0, "z": 0.4},
+    }
+
+
+def validate_l4_plan_against_l0(plan, scene_reconstruction):
+    scenario_type = plan.get("scenario_type")
+    actor_id = actor_id_from_plan(plan) or plan.get("primary_actor_id")
+    actor = actor_by_id(scene_reconstruction, actor_id)
+    if scenario_type == "front_vehicle_brake":
+        if actor_id is None or (actor and not is_vehicle_actor(actor)):
+            front_vehicle = find_front_vehicle(scene_reconstruction)
+            if front_vehicle:
+                plan["plan_validation_note"] = (
+                    "front_vehicle_brake primary actor was missing or not a vehicle; "
+                    f"overrode with L0 front vehicle actor_id={front_vehicle.get('id')}."
+                )
+            else:
+                raise ValueError("front_vehicle_brake requires a front vehicle, but no suitable L0 vehicle was found.")
+            plan["primary_actor_id"] = front_vehicle.get("id")
+            plan["primary_actor_source"] = "l0_actor"
+            plan["primary_actor_kind"] = "vehicle"
+            plan["primary_actor_role"] = "front_vehicle"
+    return plan
+
+
 def build_risk_object_spec(plan, scene_reconstruction):
     """Translate the selected scenario into a concrete primary risk object order."""
     scenario_type = plan.get("scenario_type", "unknown")
@@ -399,7 +659,9 @@ def build_risk_object_spec(plan, scene_reconstruction):
     }
 
     if scenario_type == "front_vehicle_brake":
-        actor = l0_actor or front_actor
+        actor = l0_actor if is_vehicle_actor(l0_actor) else None
+        actor = actor or find_front_vehicle(scene_reconstruction)
+        actor = actor or (front_actor if is_vehicle_actor(front_actor) else None)
         base.update(
             {
                 "primary_object": {
@@ -732,6 +994,24 @@ def build_physical_task(plan, scene_reconstruction, risk_object_spec=None):
     return task
 
 
+def preserve_plan_identity(normalized, plan):
+    for key in (
+        "primary_actor_id",
+        "primary_actor_source",
+        "primary_actor_kind",
+        "primary_actor_role",
+        "primary_actor_type_id",
+        "target_actor_id",
+        "target_actor_source",
+        "plan_validation_note",
+    ):
+        if key in plan:
+            normalized[key] = plan[key]
+    if isinstance(plan.get("object_registry"), dict):
+        normalized["object_registry"] = plan["object_registry"]
+    return normalized
+
+
 def normalize_l4_plan(plan):
     if not isinstance(plan, dict):
         plan = {}
@@ -761,7 +1041,7 @@ def normalize_l4_plan(plan):
             ),
         }
         normalized["actor_motion_plan"] = plan.get("actor_motion_plan") or default_actor_motion_plan(normalized)
-        return normalized
+        return preserve_plan_identity(normalized, plan)
 
     if scenario_type == "vulnerable_actor_intrusion":
         normalized = {
@@ -778,7 +1058,7 @@ def normalize_l4_plan(plan):
             ),
         }
         normalized["actor_motion_plan"] = plan.get("actor_motion_plan") or default_actor_motion_plan(normalized)
-        return normalized
+        return preserve_plan_identity(normalized, plan)
 
     if scenario_type == "cargo_drop":
         normalized = {
@@ -805,7 +1085,7 @@ def normalize_l4_plan(plan):
             ),
         }
         normalized["actor_motion_plan"] = plan.get("actor_motion_plan") or default_actor_motion_plan(normalized)
-        return normalized
+        return preserve_plan_identity(normalized, plan)
 
     if scenario_type == "side_vehicle_intrusion":
         normalized = {
@@ -823,7 +1103,7 @@ def normalize_l4_plan(plan):
             "expected_visual_result": plan.get("expected_visual_result", "L0侧方车辆向自车车道方向横向侵入"),
         }
         normalized["actor_motion_plan"] = plan.get("actor_motion_plan") or default_actor_motion_plan(normalized)
-        return normalized
+        return preserve_plan_identity(normalized, plan)
 
     normalized = {
         "scenario_type": "road_obstacle_intrusion",
@@ -843,7 +1123,7 @@ def normalize_l4_plan(plan):
         "expected_visual_result": plan.get("expected_visual_result", "障碍物出现在自车前方车道内"),
     }
     normalized["actor_motion_plan"] = plan.get("actor_motion_plan") or default_actor_motion_plan(normalized)
-    return normalized
+    return preserve_plan_identity(normalized, plan)
 
 
 def default_actor_motion_plan(plan):
@@ -1093,22 +1373,54 @@ def build_config(
     local_trigger_frame=20,
     pre_trigger_seconds=2.0,
     source_timestep=0.05,
+    plan_agent_args=None,
 ):
-    raw_plan = chain.get("carla_plan", {})
+    reconstruction_state, time_axis_policy = select_reconstruction_state(
+        l0_state,
+        pre_trigger_seconds=pre_trigger_seconds,
+        source_timestep=source_timestep,
+    )
+    l4_plan_agent = {
+        "enabled": bool(plan_agent_args and not getattr(plan_agent_args, "skip_plan_agent", False)),
+        "used": False,
+        "error": None,
+        "raw_response": "",
+        "output": None,
+    }
+
+    raw_plan = chain.get("carla_plan", {}) if isinstance(chain.get("carla_plan"), dict) else {}
+    if not raw_plan:
+        raw_plan = fallback_raw_plan_from_chain_text(chain)
+    if l4_plan_agent["enabled"]:
+        try:
+            agent_output, raw_response = run_l4_plan_agent(plan_agent_args, chain, l0_state, reconstruction_state)
+            l4_plan_agent.update(
+                {
+                    "used": True,
+                    "raw_response": raw_response,
+                    "output": agent_output,
+                    "model": getattr(plan_agent_args, "plan_model", None),
+                }
+            )
+            raw_plan = merge_plan_with_agent_output(raw_plan, agent_output)
+        except (DeepSeekError, json.JSONDecodeError, ValueError) as exc:
+            l4_plan_agent["error"] = repr(exc)
+            print(f"WARNING: L4 PlanAgent failed; using L3 carla_plan/fallback rules: {exc}", file=sys.stderr)
+
     original_trigger_frame = int((raw_plan or {}).get("trigger_frame", 45) or 45)
     plan = normalize_l4_plan(raw_plan)
     local_trigger_frame = clamp_local_trigger_frame(local_trigger_frame, l4_frames)
     plan = replace_nested_trigger_frames(plan, local_trigger_frame, original_trigger_frame)
     plan["original_l3_trigger_frame"] = original_trigger_frame
     plan["trigger_frame_semantics"] = "local_l4_frame_after_scene_reconstruction"
-
-    reconstruction_state, time_axis_policy = select_reconstruction_state(
-        l0_state,
-        pre_trigger_seconds=pre_trigger_seconds,
-        source_timestep=source_timestep,
-    )
     plan = adapt_actor_motion_plan_to_reconstruction(plan, reconstruction_state)
     plan = refine_plan_against_l0(plan, reconstruction_state)
+    scene_reconstruction = compact_l0_scene(reconstruction_state)
+    try:
+        plan = validate_l4_plan_against_l0(plan, scene_reconstruction or {})
+    except ValueError as exc:
+        l4_plan_agent["validation_error"] = str(exc)
+        print(f"WARNING: L4 plan validation failed; continuing with normalized plan: {exc}", file=sys.stderr)
     time_axis_policy.update(
         {
             "local_trigger_frame": local_trigger_frame,
@@ -1119,7 +1431,6 @@ def build_config(
             ),
         }
     )
-    scene_reconstruction = compact_l0_scene(reconstruction_state)
     risk_object_spec = build_risk_object_spec(plan, scene_reconstruction or {})
     physical_task = build_physical_task(plan, scene_reconstruction or {}, risk_object_spec)
     return {
@@ -1135,6 +1446,8 @@ def build_config(
         "trigger_frame": plan.get("trigger_frame", 45),
         "original_l3_trigger_frame": original_trigger_frame,
         "carla_plan": plan,
+        "l4_plan_agent": l4_plan_agent,
+        "object_registry": (l4_plan_agent.get("output") or {}).get("object_registry") or chain_object_registry(chain),
         "risk_object_spec": risk_object_spec,
         "physical_task": physical_task,
         "event_contract": build_event_contract(plan),
@@ -1367,6 +1680,7 @@ Task:
   {output_script}
 - Replace the NotImplementedError with scenario-specific behavior from scenario_config.json.
 - Read scenario_config.risk_object_spec before writing the event logic. It is the concrete translation of the main object that receives the risk perturbation.
+- Read scenario_config.object_registry and scenario_config.l4_plan_agent.output when present. They explain which objects are primary participants and which objects must remain background.
 - Treat risk_object_spec.primary_object as the only primary risk object. Strengthen that object/action; do not substitute a different actor, payload, pedestrian, or braking template.
 - Treat scenario_config.physical_task as the hard physical task order. It defines the primary actor, the action, timing, trace schema, and success criteria.
 - Before designing the scene, apply the checklist in context/failure_history.md. Do not repeat any listed failure mode.
@@ -1824,6 +2138,7 @@ def execute_chain(args, chain, l0_state, chain_dir):
         local_trigger_frame=args.local_trigger_frame,
         pre_trigger_seconds=args.pre_trigger_seconds,
         source_timestep=args.source_timestep,
+        plan_agent_args=args,
     )
     config["code_agent"] = args.code_agent
 
@@ -1903,6 +2218,12 @@ def main():
     parser.add_argument("--opencode-bin", default="opencode")
     parser.add_argument("--opencode-model", default="deepseek-v4-pro")
     parser.add_argument("--opencode-repair-attempts", type=int, default=REPAIR_ATTEMPTS)
+    parser.add_argument("--skip-plan-agent", action="store_true", help="Skip the L4 PlanAgent and use the L3 carla_plan/fallback rules directly.")
+    parser.add_argument("--plan-model", default=DEFAULT_DEEPSEEK_MODEL, help="DeepSeek model used by the L4 PlanAgent.")
+    parser.add_argument("--plan-url", default=DEFAULT_DEEPSEEK_URL, help="DeepSeek chat-completions URL used by the L4 PlanAgent.")
+    parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY", help="Environment variable containing the DeepSeek API key for the L4 PlanAgent.")
+    parser.add_argument("--env-file", default=None, help="Optional .env file for the L4 PlanAgent API key.")
+    parser.add_argument("--plan-timeout", type=float, default=300.0)
     parser.add_argument(
         "--validate-event-trace",
         action="store_true",

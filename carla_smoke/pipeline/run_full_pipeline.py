@@ -54,6 +54,7 @@ def main():
     parser.add_argument("--qwen-model", default="qwen3.5:0.8b")
     parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
     parser.add_argument("--env-file", default=None)
+    parser.add_argument("--skip-plan-agent", action="store_true")
     parser.add_argument("--stop-on-chain-error", action="store_true")
     parser.add_argument(
         "--quick",
@@ -128,6 +129,8 @@ def main():
         "--l4-pre-trigger-seconds",
         "2.0",
     ]
+    if args.skip_plan_agent:
+        command.append("--skip-plan-agent")
 
     if args.scenic_file:
         command.extend(["--scenic-file", args.scenic_file])

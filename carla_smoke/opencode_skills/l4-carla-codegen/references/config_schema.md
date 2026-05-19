@@ -14,6 +14,8 @@ Shared fields:
 - `reconstruction_policy`: requirements for preserving the L0 scene identity.
 - `event_contract`: required per-chain event trace output. Treat this as a hard acceptance contract.
 - `carla_plan.actor_motion_plan`: explicit movement/behavior plan for all important actors after the L0 snapshot.
+- `l4_plan_agent`: optional LLM translation from the natural-language L3 chain into the executable plan and object constraints.
+- `object_registry`: participant list from L3/L4 PlanAgent. It distinguishes the primary risk object from background/occluder/affected objects.
 - `risk_object_spec`: concrete translation of the one object that receives the risk perturbation.
 - `physical_task`: hard physical task order. This is the most authoritative part of the config for the generated script.
 
@@ -28,6 +30,12 @@ Important `risk_object_spec` fields:
 - `risk_object_spec.action`: the required perturbation for the primary object only.
 - `risk_object_spec.success_criteria`: numeric criteria the live scene and trace should satisfy.
 - `risk_object_spec.forbidden_substitutions`: event templates that must not be used for this chain.
+
+Important `object_registry` fields:
+
+- `object_registry.primary_object`: the object that owns the primary risk event.
+- `object_registry.participants`: ego, primary actor, and background actors involved in the chain.
+- Objects marked `must_not_drive_primary_event` are context only. Recreate them only if useful, and never let them become the main event.
 
 Important `physical_task` fields:
 

@@ -119,6 +119,7 @@ def main():
     parser.add_argument("--opencode-bin", default="opencode")
     parser.add_argument("--opencode-model", default="deepseek-v4-pro")
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
+    parser.add_argument("--skip-plan-agent", action="store_true", help="Skip the L4 PlanAgent and use L3 carla_plan/fallback rules.")
     parser.add_argument("--clean-images", action="store_true")
     args = parser.parse_args()
 
@@ -321,8 +322,20 @@ def main():
                         args.opencode_model,
                         "--opencode-repair-attempts",
                         str(args.opencode_repair_attempts),
+                        "--plan-model",
+                        args.model,
+                        "--plan-url",
+                        args.deepseek_url,
+                        "--api-key-env",
+                        args.api_key_env,
+                        "--plan-timeout",
+                        str(args.timeout),
                         "--execute",
                     ]
+                    if args.skip_plan_agent:
+                        l4_command.append("--skip-plan-agent")
+                    if args.env_file:
+                        l4_command.extend(["--env-file", args.env_file])
                     if args.l4_all_chains:
                         l4_command.append("--all-chains")
                         if args.continue_on_chain_error:
