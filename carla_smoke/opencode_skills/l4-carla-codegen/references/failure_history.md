@@ -182,12 +182,37 @@ Do:
 - Record live actor states after `world.tick()`.
 - Ensure trace values prove the event: correct actor id, correct position, correct distance/lateral trend, correct trigger timing.
 
+## 9. Vulnerable Actor Teleported to World Origin
+
+Symptom:
+
+- The requested event was a pedestrian or cyclist intrusion.
+- The actor started near the intended local offset, but at the trigger frame jumped to `(0, 0, 0)` or another far-away map location.
+- Six-view images showed no useful risk object, while the trace reported distances over 100 meters.
+
+Root cause:
+
+- The script mixed local offsets with CARLA world coordinates.
+- A generated actor path from `carla_plan.start_position` was applied as an absolute world transform after trigger.
+
+Do not:
+
+- Reinterpret `risk_object_spec.geometry.start_world` or `end_world` as local coordinates.
+- Continue if the vulnerable actor appears near world origin or moves an impossible distance in one frame.
+
+Do:
+
+- Use `risk_object_spec.primary_object.initial_location` as the spawn target.
+- Use `risk_object_spec.geometry.path_world` as the world-space path.
+- Check consecutive vulnerable actor positions and fail if a single-frame displacement exceeds the configured maximum.
+
 ## Final Pre-Flight Checklist
 
 Before finishing `generated_risk_scene.py`, verify these points in code:
 
 - `scenario_type` is exactly the configured type.
 - The primary actor source, id, type, and initial pose match `physical_task`.
+- The primary risk object, action, geometry, and forbidden substitutions match `risk_object_spec`.
 - Actor spawn location is checked after spawning.
 - The local trigger frame is inside `args.frames`.
 - Top-level `risk_rgb_XXXX.png` follows `physical_task.visualization`.

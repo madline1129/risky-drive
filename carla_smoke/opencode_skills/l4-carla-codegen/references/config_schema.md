@@ -14,9 +14,20 @@ Shared fields:
 - `reconstruction_policy`: requirements for preserving the L0 scene identity.
 - `event_contract`: required per-chain event trace output. Treat this as a hard acceptance contract.
 - `carla_plan.actor_motion_plan`: explicit movement/behavior plan for all important actors after the L0 snapshot.
+- `risk_object_spec`: concrete translation of the one object that receives the risk perturbation.
 - `physical_task`: hard physical task order. This is the most authoritative part of the config for the generated script.
 
-If `physical_task` conflicts with free-form text such as `chain_description`, follow `physical_task`.
+If `physical_task` or `risk_object_spec` conflicts with free-form text such as `chain_description`, follow `physical_task` and `risk_object_spec`.
+
+Important `risk_object_spec` fields:
+
+- `risk_object_spec.primary_object`: the exact object that must be perturbed: front vehicle, payload, vulnerable actor, road obstacle, or existing side vehicle.
+- `risk_object_spec.primary_object.source == "l0_actor"` means reconstruct that same L0 actor id/type/pose as the primary risk object.
+- `risk_object_spec.primary_object.source == "generated_actor"` means spawn a new object, but use the provided world coordinates when present.
+- `risk_object_spec.geometry`: precomputed world-space start/end/target locations for generated actors. Do not treat these as local coordinates again.
+- `risk_object_spec.action`: the required perturbation for the primary object only.
+- `risk_object_spec.success_criteria`: numeric criteria the live scene and trace should satisfy.
+- `risk_object_spec.forbidden_substitutions`: event templates that must not be used for this chain.
 
 Important `physical_task` fields:
 
@@ -91,6 +102,9 @@ Only implement pedestrian/cyclist intrusion.
 - `carla_plan.start_position`: local spawn position.
 - `carla_plan.crossing_direction`: side-to-side motion direction.
 - `carla_plan.speed_mps`: actor motion speed.
+- Prefer `risk_object_spec.geometry.start_world` and `end_world` over raw `carla_plan.start_position`.
+- Spawn the vulnerable actor near `risk_object_spec.primary_object.initial_location`, then move it along `risk_object_spec.geometry.path_world`.
+- Never reset the actor to `(0, 0, 0)` or reinterpret a precomputed world point as a local offset.
 
 ## `road_obstacle_intrusion`
 
@@ -104,6 +118,7 @@ Only implement static or slow obstacle intrusion, not vehicle braking or cargo d
 
 Only implement an existing L0 side vehicle laterally intruding toward the ego lane.
 
+- Prefer `risk_object_spec.primary_object` for actor id, type, initial pose, required lateral shift, and forbidden substitutions.
 - The primary actor must be `physical_task.primary_actor.actor_id`.
 - Spawn/reconstruct that actor from `physical_task.primary_actor.initial_location` and `initial_rotation`.
 - Move the same vehicle toward the ego lane after `physical_task.action.trigger_frame`.

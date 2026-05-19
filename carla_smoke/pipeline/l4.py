@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -273,6 +274,313 @@ def actor_by_id(l0_state, actor_id):
     return None
 
 
+def as_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def xyz_dict(value):
+    if not isinstance(value, dict):
+        return None
+    if not all(key in value for key in ("x", "y", "z")):
+        return None
+    return {
+        "x": round(as_float(value.get("x")), 3),
+        "y": round(as_float(value.get("y")), 3),
+        "z": round(as_float(value.get("z")), 3),
+    }
+
+
+def actor_location(actor):
+    return xyz_dict((actor or {}).get("location"))
+
+
+def actor_rotation(actor):
+    rotation = (actor or {}).get("rotation")
+    if not isinstance(rotation, dict):
+        return None
+    return {
+        "pitch": round(as_float(rotation.get("pitch")), 3),
+        "yaw": round(as_float(rotation.get("yaw")), 3),
+        "roll": round(as_float(rotation.get("roll")), 3),
+    }
+
+
+def ego_anchor(scene_reconstruction):
+    ego = (scene_reconstruction or {}).get("ego") or {}
+    return actor_location(ego), actor_rotation(ego)
+
+
+def local_offset_to_world(anchor_location, anchor_rotation, offset):
+    anchor = xyz_dict(anchor_location)
+    local = xyz_dict(offset)
+    if not anchor or not local:
+        return None
+    yaw = math.radians(as_float((anchor_rotation or {}).get("yaw")))
+    forward_x = math.cos(yaw)
+    forward_y = math.sin(yaw)
+    right_x = -math.sin(yaw)
+    right_y = math.cos(yaw)
+    return {
+        "x": round(anchor["x"] + local["x"] * forward_x + local["y"] * right_x, 3),
+        "y": round(anchor["y"] + local["x"] * forward_y + local["y"] * right_y, 3),
+        "z": round(anchor["z"] + local["z"], 3),
+    }
+
+
+def lateral_side_from_plan(plan):
+    spawn_hint = str(plan.get("spawn_relative_to", "")).lower()
+    direction = str(plan.get("crossing_direction", "")).lower()
+    if "left" in spawn_hint:
+        return "left"
+    if "right" in spawn_hint:
+        return "right"
+    if direction.startswith("left"):
+        return "left"
+    if direction.startswith("right"):
+        return "right"
+    start = plan.get("start_position") or plan.get("initial_position") or {}
+    y_value = as_float((start or {}).get("y"), 0.0)
+    return "left" if y_value < 0 else "right"
+
+
+def signed_lateral_for_side(side, magnitude):
+    value = abs(as_float(magnitude, 4.0))
+    return -value if side == "left" else value
+
+
+def build_generated_path_from_ego(plan, scene_reconstruction, start_key="start_position", default_x=18.0, default_y=4.0, end_x=None):
+    ego_location, ego_rotation = ego_anchor(scene_reconstruction)
+    start = dict(plan.get(start_key) or {"x": default_x, "y": default_y, "z": 0.2})
+    side = lateral_side_from_plan(plan)
+    start["y"] = signed_lateral_for_side(side, start.get("y", default_y))
+    start.setdefault("x", default_x)
+    start.setdefault("z", 0.2)
+
+    end = dict(start)
+    end["y"] = -signed_lateral_for_side(side, max(abs(as_float(start.get("y"), default_y)), 3.2))
+    end["x"] = as_float(end_x, as_float(start.get("x"), default_x) - 2.0) if end_x is not None else as_float(start.get("x"), default_x) - 2.0
+
+    return {
+        "side": side,
+        "start_local": xyz_dict(start),
+        "end_local": xyz_dict(end),
+        "start_world": local_offset_to_world(ego_location, ego_rotation, start),
+        "end_world": local_offset_to_world(ego_location, ego_rotation, end),
+    }
+
+
+def nearest_front_actor(scene_reconstruction):
+    actor = (scene_reconstruction or {}).get("nearest_front_actor")
+    return actor if isinstance(actor, dict) else None
+
+
+def build_risk_object_spec(plan, scene_reconstruction):
+    """Translate the selected scenario into a concrete primary risk object order."""
+    scenario_type = plan.get("scenario_type", "unknown")
+    trigger_frame = int(plan.get("trigger_frame", 20) or 20)
+    ego_location, ego_rotation = ego_anchor(scene_reconstruction)
+    actor_id = actor_id_from_plan(plan) or plan.get("primary_actor_id")
+    l0_actor = actor_by_id(scene_reconstruction, actor_id)
+    front_actor = nearest_front_actor(scene_reconstruction)
+
+    base = {
+        "version": "primary_risk_object_v1",
+        "hard_rule": (
+            "This spec describes only the object that receives the risk perturbation. "
+            "The generated script must implement this object/action and must not replace it with a familiar template."
+        ),
+        "scenario_type": scenario_type,
+        "trigger_frame": trigger_frame,
+        "coordinate_frame": "world_coordinates_are_precomputed_when_available",
+        "ego_anchor": {"location": ego_location, "rotation": ego_rotation},
+    }
+
+    if scenario_type == "front_vehicle_brake":
+        actor = l0_actor or front_actor
+        base.update(
+            {
+                "primary_object": {
+                    "role": "front_braking_vehicle",
+                    "kind": "vehicle",
+                    "source": "l0_actor" if actor else "generated_actor",
+                    "actor_id": (actor or {}).get("id"),
+                    "type_id": (actor or {}).get("type_id"),
+                    "initial_location": actor_location(actor),
+                    "initial_rotation": actor_rotation(actor),
+                },
+                "action": {
+                    "mode": "brake_or_decelerate_after_trigger",
+                    "brake_intensity": plan.get("brake_intensity", 1.0),
+                    "target_speed_mps": plan.get("target_speed_mps", 0.0),
+                    "deceleration_mps2": plan.get("deceleration_mps2", 6.0),
+                },
+                "success_criteria": {
+                    "front_actor_speed_drop_mps_min": 1.0,
+                    "front_distance_change_m_min": 1.0,
+                },
+                "forbidden_substitutions": ["cargo_drop", "payload", "metal_pipe", "pedestrian_intrusion"],
+            }
+        )
+        return base
+
+    if scenario_type == "side_vehicle_intrusion":
+        actor = l0_actor
+        initial_lateral = (actor or {}).get("relative_lateral_m")
+        motion = plan.get("motion", {}) if isinstance(plan.get("motion"), dict) else {}
+        requested_shift = abs(as_float(motion.get("distance_m", motion.get("lateral_shift_m", 1.5)), 1.5))
+        try:
+            needed_shift = max(requested_shift, abs(float(initial_lateral)) - 2.0)
+        except (TypeError, ValueError):
+            needed_shift = max(requested_shift, 1.5)
+        base.update(
+            {
+                "primary_object": {
+                    "role": "existing_side_vehicle",
+                    "kind": "vehicle",
+                    "source": "l0_actor",
+                    "actor_id": actor_id,
+                    "type_id": (actor or {}).get("type_id"),
+                    "initial_location": actor_location(actor),
+                    "initial_rotation": actor_rotation(actor),
+                    "initial_relative_lateral_m": initial_lateral,
+                    "initial_distance_m": (actor or {}).get("distance_m"),
+                },
+                "action": {
+                    "mode": "lateral_shift_toward_ego_lane",
+                    "minimum_lateral_shift_m": round(max(needed_shift, 1.2), 3),
+                    "target_abs_relative_lateral_m_max": 2.2,
+                    "do_not_spawn_replacement": True,
+                },
+                "success_criteria": {
+                    "primary_actor_id_must_match": actor_id,
+                    "relative_lateral_delta_m_min": round(max(needed_shift, 1.2), 3),
+                    "min_abs_relative_lateral_m_max": 2.2,
+                    "min_distance_to_ego_m_max": 8.0,
+                },
+                "forbidden_substitutions": ["road_obstacle_intrusion", "cargo_drop", "front_vehicle_brake"],
+            }
+        )
+        return base
+
+    if scenario_type == "vulnerable_actor_intrusion":
+        path = build_generated_path_from_ego(plan, scene_reconstruction, "start_position", 18.0, 4.0, end_x=6.0)
+        base.update(
+            {
+                "primary_object": {
+                    "role": "vulnerable_actor",
+                    "kind": plan.get("actor_type", "walker"),
+                    "source": "generated_actor",
+                    "actor_id": "generated_vulnerable_actor",
+                    "type_id": "walker.*" if plan.get("actor_type", "walker") == "walker" else plan.get("actor_type", "walker"),
+                    "initial_location": path.get("start_world"),
+                    "initial_rotation": ego_rotation,
+                },
+                "geometry": {
+                    "spawn_side": path.get("side"),
+                    "start_local": path.get("start_local"),
+                    "end_local": path.get("end_local"),
+                    "start_world": path.get("start_world"),
+                    "end_world": path.get("end_world"),
+                    "path_world": [point for point in (path.get("start_world"), path.get("end_world")) if point],
+                    "lane_crossing_required": True,
+                    "world_origin_is_forbidden": True,
+                },
+                "action": {
+                    "mode": "walk_or_cycle_across_ego_lane_after_trigger",
+                    "speed_mps": plan.get("speed_mps", 2.2),
+                    "must_cross_ego_lane_centerline": True,
+                    "must_approach_ego": True,
+                },
+                "success_criteria": {
+                    "actor_motion_m_min": 1.0,
+                    "min_distance_to_ego_m_max": 8.0,
+                    "min_abs_relative_lateral_m_max": 2.2,
+                    "relative_lateral_crosses_zero": True,
+                    "max_single_frame_displacement_m": 3.0,
+                },
+                "forbidden_substitutions": ["cargo_drop", "front_vehicle_brake", "road_obstacle_intrusion"],
+            }
+        )
+        return base
+
+    if scenario_type == "cargo_drop":
+        carrier = l0_actor or front_actor
+        initial = plan.get("initial_position", {"x": -3.2, "y": 0.0, "z": 2.4})
+        carrier_location = actor_location(carrier) or ego_location
+        carrier_rotation = actor_rotation(carrier) or ego_rotation
+        spawn_world = local_offset_to_world(carrier_location, carrier_rotation, initial)
+        base.update(
+            {
+                "primary_object": {
+                    "role": "payload",
+                    "kind": "payload",
+                    "source": "generated_actor",
+                    "actor_id": "generated_payload",
+                    "type_id": plan.get("object_type", "metal_pipe"),
+                    "initial_location": spawn_world,
+                    "initial_rotation": carrier_rotation,
+                    "carrier_actor_id": (carrier or {}).get("id"),
+                    "carrier_type_id": (carrier or {}).get("type_id"),
+                },
+                "geometry": {
+                    "spawn_relative_to": "front_carrier_actor",
+                    "initial_local_offset_from_carrier": xyz_dict(initial),
+                    "initial_world_location": spawn_world,
+                    "target_zone": "ego_lane_ahead_or_between_carrier_and_ego",
+                },
+                "action": {
+                    "mode": "payload_drop_or_slide_after_trigger",
+                    "object_type": plan.get("object_type", "metal_pipe"),
+                    "object_count": plan.get("object_count", 5),
+                    "motion": plan.get("motion", {}),
+                },
+                "success_criteria": {
+                    "payload_count_min": 1,
+                    "payload_motion_m_min": 0.5,
+                    "payload_min_distance_to_ego_m_max": 15.0,
+                },
+                "forbidden_substitutions": ["front_vehicle_brake", "pedestrian_intrusion"],
+            }
+        )
+        return base
+
+    path = build_generated_path_from_ego(plan, scene_reconstruction, "initial_position", 14.0, 3.0)
+    base.update(
+        {
+            "primary_object": {
+                "role": "road_obstacle",
+                "kind": "obstacle",
+                "source": "generated_actor",
+                "actor_id": "generated_road_obstacle",
+                "type_id": plan.get("object_type", "road_obstacle"),
+                "initial_location": path.get("start_world"),
+                "initial_rotation": ego_rotation,
+            },
+            "geometry": {
+                "start_local": path.get("start_local"),
+                "target_local": path.get("end_local"),
+                "start_world": path.get("start_world"),
+                "target_world": path.get("end_world"),
+                "must_enter_ego_lane": True,
+            },
+            "action": {
+                "mode": "place_or_move_obstacle_into_ego_lane_after_trigger",
+                "motion": plan.get("motion", {}),
+            },
+            "success_criteria": {
+                "obstacle_count_min": 1,
+                "min_obstacle_distance_to_ego_m_max": 12.0,
+                "min_abs_obstacle_relative_lateral_m_max": 2.2,
+            },
+            "forbidden_substitutions": ["front_vehicle_brake", "cargo_drop"],
+        }
+    )
+    return base
+
+
 def is_lateral_vehicle_motion(plan):
     motion = plan.get("motion") if isinstance(plan, dict) else {}
     motion_mode = str((motion or {}).get("mode", "")).lower()
@@ -302,24 +610,33 @@ def refine_plan_against_l0(plan, reconstruction_state):
     return plan
 
 
-def build_physical_task(plan, scene_reconstruction):
+def build_physical_task(plan, scene_reconstruction, risk_object_spec=None):
     scenario_type = plan.get("scenario_type", "unknown")
     trigger_frame = int(plan.get("trigger_frame", 20) or 20)
     motion = plan.get("motion", {}) if isinstance(plan.get("motion"), dict) else {}
+    risk_object_spec = risk_object_spec or {}
+    risk_primary = risk_object_spec.get("primary_object") if isinstance(risk_object_spec, dict) else {}
+    risk_primary = risk_primary if isinstance(risk_primary, dict) else {}
     actor_id = actor_id_from_plan(plan) or plan.get("primary_actor_id")
     primary_actor = actor_by_id(scene_reconstruction, actor_id)
+    if scenario_type == "front_vehicle_brake" and not primary_actor:
+        primary_actor = nearest_front_actor(scene_reconstruction)
+        actor_id = (primary_actor or {}).get("id") or actor_id
+    initial_location = primary_actor.get("location") if primary_actor else risk_primary.get("initial_location")
+    initial_rotation = primary_actor.get("rotation") if primary_actor else risk_primary.get("initial_rotation")
 
     task = {
         "version": "l4_physical_task_v1",
         "scenario_type": scenario_type,
         "hard_rule": "The generated CARLA scene must implement this physical_task exactly; do not substitute a different actor, object, or event type.",
+        "risk_object_spec": risk_object_spec,
         "primary_actor": {
             "source": "l0_actor" if primary_actor else "generated_actor",
-            "actor_id": actor_id,
-            "kind": primary_actor.get("kind") if primary_actor else None,
-            "type_id": primary_actor.get("type_id") if primary_actor else None,
-            "initial_location": primary_actor.get("location") if primary_actor else None,
-            "initial_rotation": primary_actor.get("rotation") if primary_actor else None,
+            "actor_id": actor_id if primary_actor else risk_primary.get("actor_id"),
+            "kind": primary_actor.get("kind") if primary_actor else risk_primary.get("kind"),
+            "type_id": primary_actor.get("type_id") if primary_actor else risk_primary.get("type_id"),
+            "initial_location": initial_location,
+            "initial_rotation": initial_rotation,
             "initial_relative_lateral_m": primary_actor.get("relative_lateral_m") if primary_actor else None,
             "initial_relative_longitudinal_m": primary_actor.get("relative_longitudinal_m") if primary_actor else None,
             "initial_distance_m": primary_actor.get("distance_m") if primary_actor else None,
@@ -402,13 +719,16 @@ def build_physical_task(plan, scene_reconstruction):
             {
                 "mode": motion.get("mode", scenario_type),
                 "raw_motion": motion,
+                "primary_risk_object_action": risk_object_spec.get("action"),
+                "primary_risk_object_geometry": risk_object_spec.get("geometry"),
             }
         )
-        task["success_criteria"] = {
+        task["success_criteria"] = dict((risk_object_spec.get("success_criteria") or {}))
+        task["success_criteria"].update({
             "must_match_scenario_type": scenario_type,
             "must_use_primary_actor_from_event_contract": True,
             "saved_images_must_show_primary_event": True,
-        }
+        })
     return task
 
 
@@ -800,7 +1120,8 @@ def build_config(
         }
     )
     scene_reconstruction = compact_l0_scene(reconstruction_state)
-    physical_task = build_physical_task(plan, scene_reconstruction or {})
+    risk_object_spec = build_risk_object_spec(plan, scene_reconstruction or {})
+    physical_task = build_physical_task(plan, scene_reconstruction or {}, risk_object_spec)
     return {
         "level": "L4",
         "name": "CARLA代码执行",
@@ -814,6 +1135,7 @@ def build_config(
         "trigger_frame": plan.get("trigger_frame", 45),
         "original_l3_trigger_frame": original_trigger_frame,
         "carla_plan": plan,
+        "risk_object_spec": risk_object_spec,
         "physical_task": physical_task,
         "event_contract": build_event_contract(plan),
         "scene_reconstruction": scene_reconstruction,
@@ -1044,6 +1366,8 @@ Task:
 - Edit the neutral seeded Python script in place at exactly:
   {output_script}
 - Replace the NotImplementedError with scenario-specific behavior from scenario_config.json.
+- Read scenario_config.risk_object_spec before writing the event logic. It is the concrete translation of the main object that receives the risk perturbation.
+- Treat risk_object_spec.primary_object as the only primary risk object. Strengthen that object/action; do not substitute a different actor, payload, pedestrian, or braking template.
 - Treat scenario_config.physical_task as the hard physical task order. It defines the primary actor, the action, timing, trace schema, and success criteria.
 - Before designing the scene, apply the checklist in context/failure_history.md. Do not repeat any listed failure mode.
 - If physical_task conflicts with free-form text such as chain_description or expected_visual_result, follow physical_task.
@@ -1097,6 +1421,7 @@ Execution error:
 {error_output}
 
 Edit the existing script in place. Keep the same CLI arguments and output behavior.
+Read scenario_config.risk_object_spec first and repair the script so that exact primary risk object/action is implemented.
 Treat scenario_config.physical_task as the hard execution contract. If the script does not satisfy physical_task.success_criteria, change the physical scene, not just the trace.
 Fix the root cause, especially CARLA import/scope errors such as UnboundLocalError from referencing carla before import.
 If the failure mentions event_trace, implement or fix --output-dir/event_trace.json according to scenario_config.event_contract.
@@ -1358,6 +1683,30 @@ def validate_event_trace_semantics(config, trace, frames):
     if scenario_type == "vulnerable_actor_intrusion":
         ego_before = numeric_values(before[-10:] if before else [], "ego_speed_mps")
         require(ego_before and max(ego_before) >= 1.0, "vulnerable_actor_intrusion trigger occurs after ego has already stopped.")
+        risk_spec = config.get("risk_object_spec", {})
+        configured_start = point_from_value(
+            ((risk_spec.get("primary_object") or {}).get("initial_location"))
+            or ((risk_spec.get("geometry") or {}).get("start_world"))
+        )
+        all_actor_points = point_values(frames, "vulnerable_actor_position")
+        if configured_start and all_actor_points:
+            initial_error = point_distance(configured_start, all_actor_points[0])
+            require(
+                initial_error <= 5.0,
+                "vulnerable_actor_intrusion primary actor spawned far from risk_object_spec start location "
+                f"({initial_error:.3f}m). This usually means local/world coordinates were mixed.",
+            )
+        if len(all_actor_points) >= 2:
+            max_step = max(point_distance(a, b) for a, b in zip(all_actor_points, all_actor_points[1:]))
+            step_limit = as_float(
+                ((risk_spec.get("success_criteria") or {}).get("max_single_frame_displacement_m")),
+                3.0,
+            )
+            require(
+                max_step <= step_limit,
+                "vulnerable_actor_intrusion primary actor teleported or jumped too far between frames "
+                f"({max_step:.3f}m > {step_limit:.3f}m).",
+            )
         actor_points = point_values(after, "vulnerable_actor_position")
         require(len(actor_points) >= 2, "vulnerable_actor_intrusion trace must include actor positions after trigger.")
         actor_motion = max(point_distance(actor_points[0], point) for point in actor_points[1:])
