@@ -67,6 +67,7 @@ def main():
     parser.add_argument("--pre-trigger-seconds", type=float, default=2.0)
     parser.add_argument("--source-timestep", type=float, default=0.05)
     parser.add_argument("--chain-index", type=int, default=None, help="Run only one chain. Defaults to all chains.")
+    parser.add_argument("--all-chains", action="store_true", help="Run all chains. Kept for consistency with other L4 runners.")
     parser.add_argument("--continue-on-chain-error", action="store_true", default=True)
     parser.add_argument("--stop-on-chain-error", action="store_true")
     parser.add_argument("--validate-event-trace", action="store_true", default=True)
@@ -84,6 +85,8 @@ def main():
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--plan-timeout", type=float, default=300.0)
     args = parser.parse_args()
+    if args.all_chains:
+        args.chain_index = None
 
     run_dir = os.path.abspath(args.run_dir)
     l0_json = os.path.join(run_dir, "l0", "state.json")
