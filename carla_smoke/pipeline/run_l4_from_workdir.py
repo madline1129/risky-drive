@@ -54,6 +54,15 @@ def main():
     parser.add_argument("--town", default=None)
     parser.add_argument("--frames", type=int, default=180)
     parser.add_argument("--save-every", type=int, default=5)
+    parser.add_argument(
+        "--l4-backend",
+        choices=["safebench-intervention", "code-agent"],
+        default="safebench-intervention",
+        help=(
+            "Default safebench-intervention replays the original SafeBench scene and perturbs live actors. "
+            "Use code-agent to keep the older generated-script fresh-world backend."
+        ),
+    )
     parser.add_argument("--local-trigger-frame", type=int, default=20)
     parser.add_argument("--pre-trigger-seconds", type=float, default=2.0)
     parser.add_argument("--source-timestep", type=float, default=0.05)
@@ -87,64 +96,116 @@ def main():
         raise FileNotFoundError(f"L3 chains not found: {l3_json}")
 
     l4_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l4.py")
+    intervention_script = os.path.join(repo_root, "carla_smoke", "pipeline", "run_l4_intervention_from_workdir.py")
     carla_python = args.carla_python or sys.executable
-    command = [
-        carla_python,
-        l4_script,
-        l3_json,
-        "--output-dir",
-        output_dir,
-        "--l0-json",
-        l0_json,
-        "--carla-root",
-        args.carla_root,
-        "--host",
-        args.host,
-        "--port",
-        str(args.port),
-        "--town",
-        derive_town(run_dir, args.town),
-        "--frames",
-        str(args.frames),
-        "--save-every",
-        str(args.save_every),
-        "--local-trigger-frame",
-        str(args.local_trigger_frame),
-        "--pre-trigger-seconds",
-        str(args.pre_trigger_seconds),
-        "--source-timestep",
-        str(args.source_timestep),
-        "--code-agent",
-        args.code_agent,
-        "--opencode-bin",
-        args.opencode_bin,
-        "--opencode-model",
-        args.opencode_model,
-        "--opencode-repair-attempts",
-        str(args.opencode_repair_attempts),
-        "--plan-model",
-        args.plan_model,
-        "--plan-url",
-        args.plan_url,
-        "--api-key-env",
-        args.api_key_env,
-        "--plan-timeout",
-        str(args.plan_timeout),
-    ]
-    if args.skip_plan_agent:
-        command.append("--skip-plan-agent")
-    if args.env_file:
-        command.extend(["--env-file", args.env_file])
-    if not args.no_execute and args.execute:
-        command.append("--execute")
-    if args.chain_index is None:
-        command.append("--all-chains")
-        if args.continue_on_chain_error and not args.stop_on_chain_error:
-            command.append("--continue-on-chain-error")
+
+    if args.l4_backend == "safebench-intervention":
+        command = [
+            carla_python,
+            intervention_script,
+            "--run-dir",
+            run_dir,
+            "--output-dir",
+            output_dir,
+            "--l0-json",
+            l0_json,
+            "--l3-json",
+            l3_json,
+            "--carla-root",
+            args.carla_root,
+            "--host",
+            args.host,
+            "--port",
+            str(args.port),
+            "--frames",
+            str(args.frames),
+            "--save-every",
+            str(args.save_every),
+            "--local-trigger-frame",
+            str(args.local_trigger_frame),
+            "--pre-trigger-seconds",
+            str(args.pre_trigger_seconds),
+            "--source-timestep",
+            str(args.source_timestep),
+            "--plan-model",
+            args.plan_model,
+            "--plan-url",
+            args.plan_url,
+            "--api-key-env",
+            args.api_key_env,
+            "--plan-timeout",
+            str(args.plan_timeout),
+        ]
+        if args.skip_plan_agent:
+            command.append("--skip-plan-agent")
+        if args.env_file:
+            command.extend(["--env-file", args.env_file])
+        if args.chain_index is None:
+            command.append("--all-chains")
+            if args.continue_on_chain_error and not args.stop_on_chain_error:
+                command.append("--continue-on-chain-error")
+        else:
+            command.extend(["--chain-index", str(args.chain_index)])
+        if not args.validate_event_trace or args.skip_event_trace_validation:
+            command.append("--skip-event-trace-validation")
     else:
-        command.extend(["--chain-index", str(args.chain_index)])
-    if args.validate_event_trace and not args.skip_event_trace_validation:
-        command.append("--validate-event-trace")
+        command = [
+            carla_python,
+            l4_script,
+            l3_json,
+            "--output-dir",
+            output_dir,
+            "--l0-json",
+            l0_json,
+            "--carla-root",
+            args.carla_root,
+            "--host",
+            args.host,
+            "--port",
+            str(args.port),
+            "--town",
+            derive_town(run_dir, args.town),
+            "--frames",
+            str(args.frames),
+            "--save-every",
+            str(args.save_every),
+            "--local-trigger-frame",
+            str(args.local_trigger_frame),
+            "--pre-trigger-seconds",
+            str(args.pre_trigger_seconds),
+            "--source-timestep",
+            str(args.source_timestep),
+            "--code-agent",
+            args.code_agent,
+            "--opencode-bin",
+            args.opencode_bin,
+            "--opencode-model",
+            args.opencode_model,
+            "--opencode-repair-attempts",
+            str(args.opencode_repair_attempts),
+            "--plan-model",
+            args.plan_model,
+            "--plan-url",
+            args.plan_url,
+            "--api-key-env",
+            args.api_key_env,
+            "--plan-timeout",
+            str(args.plan_timeout),
+        ]
+        if args.skip_plan_agent:
+            command.append("--skip-plan-agent")
+        if args.env_file:
+            command.extend(["--env-file", args.env_file])
+        if not args.no_execute and args.execute:
+            command.append("--execute")
+        if args.chain_index is None:
+            command.append("--all-chains")
+            if args.continue_on_chain_error and not args.stop_on_chain_error:
+                command.append("--continue-on-chain-error")
+        else:
+            command.extend(["--chain-index", str(args.chain_index)])
+        if args.validate_event_trace and not args.skip_event_trace_validation:
+            command.append("--validate-event-trace")
 
     run_command(command)
     return 0
