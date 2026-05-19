@@ -13,16 +13,17 @@ Use this skill when asked to create or fix `generated_risk_scene.py` for the Cha
 2. If `l0_state.json` exists, read it before designing the scene. Treat it as the source of truth for map, weather, ego pose, nearest front actor, and relevant nearby actors.
 3. Read `carla_plan.actor_motion_plan` in `scenario_config.json`. Treat it as the source of truth for each actor's behavior after the L0 snapshot.
 4. Read `reference_executor.py` before editing. Reuse its CARLA import, synchronous mode, camera, cleanup, and generic spawn patterns only.
-5. Edit only `generated_risk_scene.py` unless the user explicitly asks otherwise.
-6. Keep the script self-contained. Do not import project modules.
-7. Preserve these CLI arguments: `--carla-root`, `--host`, `--port`, `--town`, `--output-dir`, `--frames`, `--save-every`.
-8. The script must default to reading `scenario_config.json` from its own directory.
-9. Save risk frames as `risk_rgb_XXXX.png` in `--output-dir`. Follow `physical_task.visualization`; by default each top-level risk image must be a six-view 2x3 ego-camera montage, not a front-only camera.
-10. Write `event_trace.json` in `--output-dir` according to `scenario_config.event_contract`.
-11. Use CARLA synchronous mode with `fixed_delta_seconds = 0.05`, and restore original world settings in `finally`.
-12. Destroy all spawned actors in reverse order in `finally`.
-13. Before finishing, make sure the script would pass `python -m py_compile generated_risk_scene.py` and `python generated_risk_scene.py --help`.
-14. Replace any seed `NotImplementedError` with the exact scenario behavior requested by `carla_plan.scenario_type`.
+5. Read `context/failure_history.md` before designing the scene. Avoid every listed failure mode.
+6. Edit only `generated_risk_scene.py` unless the user explicitly asks otherwise.
+7. Keep the script self-contained. Do not import project modules.
+8. Preserve these CLI arguments: `--carla-root`, `--host`, `--port`, `--town`, `--output-dir`, `--frames`, `--save-every`.
+9. The script must default to reading `scenario_config.json` from its own directory.
+10. Save risk frames as `risk_rgb_XXXX.png` in `--output-dir`. Follow `physical_task.visualization`; by default each top-level risk image must be a six-view 2x3 ego-camera montage, not a front-only camera.
+11. Write `event_trace.json` in `--output-dir` according to `scenario_config.event_contract`.
+12. Use CARLA synchronous mode with `fixed_delta_seconds = 0.05`, and restore original world settings in `finally`.
+13. Destroy all spawned actors in reverse order in `finally`.
+14. Before finishing, make sure the script would pass `python -m py_compile generated_risk_scene.py` and `python generated_risk_scene.py --help`.
+15. Replace any seed `NotImplementedError` with the exact scenario behavior requested by `carla_plan.scenario_type`.
 
 ## Guardrails
 
@@ -53,3 +54,4 @@ Use this skill when asked to create or fix `generated_risk_scene.py` for the Cha
 - `context/event_contract.md`: required per-chain trace output and semantic acceptance checks.
 - `context/carla_recipes.md`: stable CARLA implementation patterns.
 - `context/known_failures.md`: common generated-script failures and fixes.
+- `context/failure_history.md`: concrete failure cases already observed in this project; treat it as a pre-flight checklist.

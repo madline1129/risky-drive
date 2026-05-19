@@ -41,3 +41,9 @@ Fix: use the same L0 actor id/type from `physical_task.primary_actor`, move it t
 Cause: the script used the old reference executor's single front camera pattern.
 
 Fix: attach all cameras listed in `physical_task.visualization.camera_specs`, collect all images after each tick, and save the top-level `risk_rgb_XXXX.png` as the requested 2x3 montage.
+
+## Trace shows the primary actor near `(0, 0)` or hundreds of meters from ego
+
+Cause: the script ignored or lost `physical_task.primary_actor.initial_location`, or a spawn fallback placed the actor at world origin / an unrelated spawn point.
+
+Fix: build the spawn transform directly from `physical_task.primary_actor.initial_location` and `initial_rotation`. Immediately after spawning, check `actor.get_location()` against the requested coordinates. If the error is large, destroy and retry near the requested L0 pose or fail instead of continuing.

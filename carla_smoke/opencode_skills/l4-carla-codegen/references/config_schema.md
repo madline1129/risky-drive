@@ -22,6 +22,7 @@ Important `physical_task` fields:
 
 - `physical_task.primary_actor`: the actor that must drive the event.
 - `physical_task.primary_actor.source == "l0_actor"` means reuse that same L0 actor id/type/pose as the primary event actor. Do not replace it with a generic spawned obstacle.
+- After spawning an actor from `physical_task.primary_actor.initial_location`, verify the live actor location is close to that requested location. If it appears near world origin or an unrelated spawn point, destroy it and retry near the requested L0 pose or fail clearly.
 - `physical_task.action`: required motion, trigger timing, and target geometry.
 - `physical_task.success_criteria`: numeric acceptance criteria. The generated physical scene must satisfy these.
 - `physical_task.trace_schema.top_level_frames_key`: per-frame trace data must be written under this key, normally `frames`.

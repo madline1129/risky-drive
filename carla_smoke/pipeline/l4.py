@@ -1015,7 +1015,7 @@ def prepare_opencode_workspace(args, config_path):
             "# OpenCode Workspace Instructions\n\n"
             "Use the `l4-carla-codegen` skill for this workspace.\n"
             "Edit only `generated_risk_scene.py` unless explicitly asked otherwise.\n"
-            "Read `scenario_config.json`, optional `l0_state.json`, `reference_executor.py`, and the files under `context/` before editing.\n"
+            "Read `scenario_config.json`, optional `l0_state.json`, `reference_executor.py`, `context/failure_history.md`, and the files under `context/` before editing.\n"
             "Keep the generated script self-contained and compatible with the L4 pipeline CLI.\n"
             "Reconstruct the risk scene from L0 state when available instead of using unrelated default spawn points.\n"
         )
@@ -1040,13 +1040,15 @@ Task:
 - Read the L4 scenario config at:
   {config_path}
 - Read l0_state.json if it exists.
-- Read reference_executor.py and the files under context/. Use reference_executor.py for CARLA mechanics only, not as an event template.
+- Read reference_executor.py and the files under context/, especially context/failure_history.md. Use reference_executor.py for CARLA mechanics only, not as an event template.
 - Edit the neutral seeded Python script in place at exactly:
   {output_script}
 - Replace the NotImplementedError with scenario-specific behavior from scenario_config.json.
 - Treat scenario_config.physical_task as the hard physical task order. It defines the primary actor, the action, timing, trace schema, and success criteria.
+- Before designing the scene, apply the checklist in context/failure_history.md. Do not repeat any listed failure mode.
 - If physical_task conflicts with free-form text such as chain_description or expected_visual_result, follow physical_task.
 - If physical_task.primary_actor.source is "l0_actor", the primary event must use that same L0 actor id/type/initial pose as closely as CARLA spawn constraints allow. Do not replace it with a generic obstacle or newly invented actor.
+- After spawning any actor from physical_task, immediately verify actor.get_location() is close to the requested initial_location. If the actor appears near world origin or a random spawn point, destroy it and retry near the requested L0 pose or fail clearly.
 - Reconstruct the scene from L0 scene_reconstruction/source state: preserve town/map, weather, ego pose, nearest front actor, and relevant nearby actors as much as CARLA spawn constraints allow.
 - Treat carla_plan.trigger_frame as a local frame in the generated L4 simulation, not as an original SafeBench global frame.
 - Follow scenario_config.time_axis_policy: start from scene_reconstruction.source_frame, trigger at local_trigger_frame, then continue until --frames.
@@ -1099,7 +1101,7 @@ Treat scenario_config.physical_task as the hard execution contract. If the scrip
 Fix the root cause, especially CARLA import/scope errors such as UnboundLocalError from referencing carla before import.
 If the failure mentions event_trace, implement or fix --output-dir/event_trace.json according to scenario_config.event_contract.
 If the failure mentions semantic validation, change the physical scene so the primary actor satisfies event_contract.numeric_acceptance; do not fake trace values.
-Read reference_executor.py, context/known_failures.md, and the current generated_risk_scene.py before editing.
+Read reference_executor.py, context/known_failures.md, context/failure_history.md, and the current generated_risk_scene.py before editing.
 Do not write Markdown. Do not ask questions. Only modify the Python script.
 """
 
@@ -1399,6 +1401,16 @@ def validate_event_trace_semantics(config, trace, frames):
             )
         actor_points = point_values(after, "primary_actor_position")
         require(len(actor_points) >= 2, "side_vehicle_intrusion trace must include primary_actor_position after trigger.")
+        all_actor_points = point_values(frames, "primary_actor_position")
+        configured_location = (physical_task.get("primary_actor") or {}).get("initial_location")
+        configured_point = point_from_value(configured_location)
+        if configured_point and all_actor_points:
+            initial_error = point_distance(configured_point, all_actor_points[0])
+            require(
+                initial_error <= 3.0,
+                "side_vehicle_intrusion primary actor spawned far from physical_task.primary_actor.initial_location "
+                f"({initial_error:.3f}m). This usually means it fell back to world origin or an unrelated spawn point.",
+            )
         laterals = numeric_values(frames, "relative_lateral_m")
         require(laterals, "side_vehicle_intrusion trace must include relative_lateral_m.")
         action = physical_task.get("action", {})
