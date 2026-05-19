@@ -97,7 +97,32 @@ Do:
 - If the error is large, destroy the actor and retry near the requested pose with small `z` offsets only.
 - If it still cannot spawn near the requested pose, fail clearly instead of producing empty images.
 
-## 5. `event_trace.frames` Was Not a Frame List
+## 5. Raw L0 Pose Spawned at World Origin
+
+Symptom:
+
+- The generated script selected the correct L0 actor, but CARLA spawned ego or the primary vehicle at `(0, 0, 0)`.
+- The script printed an error like `actual=(0.000,0.000,0.000) requested=(-188.131,112.884,0.123)`.
+
+Root cause:
+
+- The script used the raw L0 transform directly and did not project vehicle poses to nearby map waypoints.
+- A fallback path treated a failed/invalid spawn as a valid actor at world origin.
+
+Do not:
+
+- Accept `(0, 0, 0)` as a successful spawn.
+- Use a random map spawn point for a configured L0 primary actor.
+- Continue with images or trace after ego/primary actor is far from the requested L0 pose.
+
+Do:
+
+- For ego and vehicle primary actors, project the requested L0 location to a nearby driving-lane waypoint using `world.get_map().get_waypoint(..., project_to_road=True, lane_type=carla.LaneType.Driving)`.
+- Try requested transform with small z offsets first, then waypoint-snapped transforms and small forward/backward lane shifts.
+- Verify `actor.get_location()` after every spawn attempt.
+- Fail clearly if no nearby valid spawn preserves the requested L0 scene identity.
+
+## 6. `event_trace.frames` Was Not a Frame List
 
 Symptom:
 
@@ -118,7 +143,7 @@ Do:
 - Write `frames` as a non-empty list of per-frame dictionaries.
 - Each frame dictionary must include `event_contract.required_frame_fields`.
 
-## 6. Side Vehicle Intrusion Was Implemented as Road Obstacle Intrusion
+## 7. Side Vehicle Intrusion Was Implemented as Road Obstacle Intrusion
 
 Symptom:
 
@@ -141,7 +166,7 @@ Do:
 - Move that same existing L0 side vehicle laterally toward the ego lane after trigger.
 - Record `primary_actor_id`, `primary_actor_type_id`, `primary_actor_position`, `distance_to_ego_m`, and `relative_lateral_m`.
 
-## 7. Lateral Shift Was Too Weak
+## 8. Lateral Shift Was Too Weak
 
 Symptom:
 
@@ -161,7 +186,7 @@ Do:
 - Use `physical_task.action.minimum_lateral_shift_m` and `target_abs_relative_lateral_m_max`.
 - Keep moving the primary actor toward the ego lane until the trace satisfies the criteria or fail.
 
-## 8. Trace Looked Successful But Did Not Prove the Physical Event
+## 9. Trace Looked Successful But Did Not Prove the Physical Event
 
 Symptom:
 
@@ -182,7 +207,7 @@ Do:
 - Record live actor states after `world.tick()`.
 - Ensure trace values prove the event: correct actor id, correct position, correct distance/lateral trend, correct trigger timing.
 
-## 9. Vulnerable Actor Teleported to World Origin
+## 10. Vulnerable Actor Teleported to World Origin
 
 Symptom:
 

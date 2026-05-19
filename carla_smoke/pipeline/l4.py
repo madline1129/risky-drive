@@ -1687,6 +1687,7 @@ Task:
 - If physical_task conflicts with free-form text such as chain_description or expected_visual_result, follow physical_task.
 - If physical_task.primary_actor.source is "l0_actor", the primary event must use that same L0 actor id/type/initial pose as closely as CARLA spawn constraints allow. Do not replace it with a generic obstacle or newly invented actor.
 - After spawning any actor from physical_task, immediately verify actor.get_location() is close to the requested initial_location. If the actor appears near world origin or a random spawn point, destroy it and retry near the requested L0 pose or fail clearly.
+- For ego and vehicle primary actors, raw L0 poses may not be directly spawnable. Project to a nearby driving-lane waypoint with world.get_map().get_waypoint(project_to_road=True, lane_type=carla.LaneType.Driving), try small z offsets and nearby lane shifts, then verify the live location. Never accept a spawn near (0,0,0).
 - Reconstruct the scene from L0 scene_reconstruction/source state: preserve town/map, weather, ego pose, nearest front actor, and relevant nearby actors as much as CARLA spawn constraints allow.
 - Treat carla_plan.trigger_frame as a local frame in the generated L4 simulation, not as an original SafeBench global frame.
 - Follow scenario_config.time_axis_policy: start from scene_reconstruction.source_frame, trigger at local_trigger_frame, then continue until --frames.
@@ -1737,6 +1738,7 @@ Execution error:
 Edit the existing script in place. Keep the same CLI arguments and output behavior.
 Read scenario_config.risk_object_spec first and repair the script so that exact primary risk object/action is implemented.
 Treat scenario_config.physical_task as the hard execution contract. If the script does not satisfy physical_task.success_criteria, change the physical scene, not just the trace.
+If ego or a vehicle primary actor spawned at `(0,0,0)` or far from the requested L0 pose, repair the spawn logic: use waypoint projection near the requested L0 location, small z offsets, and nearby lane shifts, then verify the live actor location. Do not switch to an unrelated spawn point.
 Fix the root cause, especially CARLA import/scope errors such as UnboundLocalError from referencing carla before import.
 If the failure mentions event_trace, implement or fix --output-dir/event_trace.json according to scenario_config.event_contract.
 If the failure mentions semantic validation, change the physical scene so the primary actor satisfies event_contract.numeric_acceptance; do not fake trace values.

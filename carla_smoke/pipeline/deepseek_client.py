@@ -51,7 +51,9 @@ def load_env_file(path=None, override=False):
 
 
 def get_api_key(env_name, env_file=None):
-    load_env_file(env_file, override=bool(env_file))
+    # Prefer the project .env over a stale exported shell variable. This pipeline is
+    # usually launched from long-lived conda shells where old API keys can linger.
+    load_env_file(env_file, override=True)
     api_key = os.environ.get(env_name)
     if not api_key:
         hint = f" Put {env_name}=<your key> in .env or export it in the shell."

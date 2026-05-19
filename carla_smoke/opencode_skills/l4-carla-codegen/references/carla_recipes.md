@@ -29,3 +29,20 @@ Create `sensor.camera.rgb`, attach it to the ego vehicle, listen into a `queue.Q
 ## Actor cleanup
 
 Keep every spawned actor in `actors`. In `finally`, iterate `reversed(actors)`, check `actor.is_alive`, and catch `RuntimeError` around destroy calls.
+
+## L0 Pose Spawning
+
+L0 actor locations are measured from the running SafeBench scene. A raw transform at that exact `(x, y, z)` may be slightly off the drivable lane or occupied when the generated L4 replay loads the map. Do not fall back to world origin or an arbitrary spawn point.
+
+For ego and vehicle primary actors:
+
+1. Build the requested transform from `physical_task.*.initial_location` and `initial_rotation`.
+2. Ask `world.get_map().get_waypoint(requested_location, project_to_road=True, lane_type=carla.LaneType.Driving)`.
+3. If a waypoint exists near the requested location, use the waypoint transform with the requested yaw when available, and raise `z` by a small amount such as `0.2`.
+4. Try `world.try_spawn_actor` at a small set of nearby transforms: requested transform with small z offsets, waypoint transform, and waypoint transform shifted slightly along the lane.
+5. After spawning, compare `actor.get_location()` to the requested L0 location. For waypoint-snapped vehicles, the error should still be small enough to preserve the scene, typically under a few meters. If the actor appears near `(0, 0, 0)` or far from the requested L0 pose, destroy it and retry or fail clearly.
+
+For pedestrians:
+
+- Prefer the requested sidewalk/world location if it spawns correctly.
+- If it fails, use `world.get_random_location_from_navigation()` only if the returned point is near the requested L0 location. Do not use a random pedestrian point elsewhere in the map.
