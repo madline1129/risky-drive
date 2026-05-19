@@ -42,6 +42,14 @@ For ego and vehicle primary actors:
 4. Try `world.try_spawn_actor` at a small set of nearby transforms: requested transform with small z offsets, waypoint transform, and waypoint transform shifted slightly along the lane.
 5. After spawning, compare `actor.get_location()` to the requested L0 location. For waypoint-snapped vehicles, the error should still be small enough to preserve the scene, typically under a few meters. If the actor appears near `(0, 0, 0)` or far from the requested L0 pose, destroy it and retry or fail clearly.
 
+If the exact ego L0 pose still cannot spawn:
+
+- Check `scenario_config.spawn_policy.relative_relocation_allowed`.
+- Choose the closest valid driving waypoint or map spawn point for ego.
+- Recompute primary and background actor world poses from the actual ego transform, preserving L0 relative longitudinal/lateral offsets. For example, use the actual ego forward/right vectors and place a front actor at `ego + forward * relative_longitudinal + right * relative_lateral`.
+- Record `scene_relocated: true` and requested/actual ego/primary locations in `event_trace.json`.
+- Continue into the simulation loop and save `risk_rgb_XXXX.png`; do not fail before frame 0 solely because the original absolute ego coordinate was not spawnable.
+
 For pedestrians:
 
 - Prefer the requested sidewalk/world location if it spawns correctly.

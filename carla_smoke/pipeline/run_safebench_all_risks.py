@@ -70,6 +70,7 @@ def main():
     parser.add_argument("--l4-save-every", type=int, default=5)
     parser.add_argument("--l4-local-trigger-frame", type=int, default=20, help="Start each generated event 1s into the L4 replay by default.")
     parser.add_argument("--l4-pre-trigger-seconds", type=float, default=2.0, help="Reconstruct from about 2s before the closest-risk source frame.")
+    parser.add_argument("--l4-backend", choices=["safebench-intervention", "code-agent"], default="safebench-intervention")
     parser.add_argument("--skip-event-trace-validation", action="store_true")
     parser.add_argument("--stop-on-chain-error", action="store_true", help="Stop all-chain execution when one L4 chain fails.")
     parser.add_argument("--extra-arg", action="append", default=[], help="Additional raw argument passed to run_safebench.py. May be repeated.")
@@ -139,6 +140,8 @@ def main():
         str(args.l4_local_trigger_frame),
         "--l4-pre-trigger-seconds",
         str(args.l4_pre_trigger_seconds),
+        "--l4-backend",
+        args.l4_backend,
         "--l4-all-chains",
     ]
     if args.skip_plan_agent:

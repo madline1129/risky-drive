@@ -120,7 +120,9 @@ Do:
 - For ego and vehicle primary actors, project the requested L0 location to a nearby driving-lane waypoint using `world.get_map().get_waypoint(..., project_to_road=True, lane_type=carla.LaneType.Driving)`.
 - Try requested transform with small z offsets first, then waypoint-snapped transforms and small forward/backward lane shifts.
 - Verify `actor.get_location()` after every spawn attempt.
-- Fail clearly if no nearby valid spawn preserves the requested L0 scene identity.
+- If exact ego spawning still fails and `scenario_config.spawn_policy.relative_relocation_allowed` is true, relocate the whole scene to a valid ego spawn and recompute primary/background poses from the actual ego transform while preserving relative longitudinal/lateral geometry.
+- Record relocation metadata in `event_trace.json`.
+- Fail clearly only if both exact spawning and relative relocation fail.
 
 ## 6. `event_trace.frames` Was Not a Frame List
 

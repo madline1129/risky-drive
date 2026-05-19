@@ -52,6 +52,7 @@ def main():
     parser.add_argument("--model", default="deepseek-v4-pro")
     parser.add_argument("--opencode-model", default="deepseek-v4-pro")
     parser.add_argument("--qwen-model", default="qwen3.5:0.8b")
+    parser.add_argument("--l4-backend", choices=["safebench-intervention", "code-agent"], default="safebench-intervention")
     parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--skip-plan-agent", action="store_true")
@@ -128,6 +129,8 @@ def main():
         "20",
         "--l4-pre-trigger-seconds",
         "2.0",
+        "--l4-backend",
+        args.l4_backend,
     ]
     if args.skip_plan_agent:
         command.append("--skip-plan-agent")

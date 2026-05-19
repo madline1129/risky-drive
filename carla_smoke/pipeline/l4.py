@@ -1452,6 +1452,42 @@ def build_config(
         "physical_task": physical_task,
         "event_contract": build_event_contract(plan),
         "scene_reconstruction": scene_reconstruction,
+        "spawn_policy": {
+            "mode": "prefer_l0_absolute_pose_then_preserve_relative_scene",
+            "absolute_l0_pose_preferred": True,
+            "relative_relocation_allowed": True,
+            "why": (
+                "Some SafeBench L0 poses are not directly spawnable after reloading CARLA. "
+                "If ego cannot be spawned near the requested L0 pose, relocate the whole L4 scene "
+                "to a nearby valid driving waypoint or spawn point while preserving ego-to-primary "
+                "and ego-to-participant relative geometry."
+            ),
+            "ego_spawn_order": [
+                "requested_l0_transform_with_small_z_offsets",
+                "nearest_driving_waypoint_to_requested_l0_location",
+                "nearby_lane_shifts_from_that_waypoint",
+                "closest_available_map_spawn_point_as_last_resort",
+            ],
+            "on_relocation": {
+                "must_preserve_relative_geometry": True,
+                "recompute_primary_actor_world_pose_from_actual_ego_pose": True,
+                "do_not_use_original_absolute_primary_pose_after_ego_relocation": True,
+                "record_in_event_trace": [
+                    "scene_relocated",
+                    "relocation_reason",
+                    "requested_ego_location",
+                    "actual_ego_location",
+                    "requested_primary_location",
+                    "actual_primary_initial_location",
+                ],
+            },
+            "forbidden": [
+                "failing before the frame loop only because exact ego L0 pose cannot spawn",
+                "spawning ego at world origin",
+                "spawning primary actor at original absolute L0 pose after relocating ego",
+                "using an unrelated primary actor or changing scenario_type",
+            ],
+        },
         "time_axis_policy": time_axis_policy,
         "reconstruction_policy": {
             "base_scene": "Reconstruct the L4 risk scene from L0 state instead of choosing unrelated spawn points.",
@@ -1688,6 +1724,7 @@ Task:
 - If physical_task.primary_actor.source is "l0_actor", the primary event must use that same L0 actor id/type/initial pose as closely as CARLA spawn constraints allow. Do not replace it with a generic obstacle or newly invented actor.
 - After spawning any actor from physical_task, immediately verify actor.get_location() is close to the requested initial_location. If the actor appears near world origin or a random spawn point, destroy it and retry near the requested L0 pose or fail clearly.
 - For ego and vehicle primary actors, raw L0 poses may not be directly spawnable. Project to a nearby driving-lane waypoint with world.get_map().get_waypoint(project_to_road=True, lane_type=carla.LaneType.Driving), try small z offsets and nearby lane shifts, then verify the live location. Never accept a spawn near (0,0,0).
+- Follow scenario_config.spawn_policy. If ego cannot spawn near the exact L0 pose after waypoint/z-offset retries, do not fail before the frame loop. Relocate the whole scene to the closest valid driving spawn/waypoint, recompute primary/background actor poses relative to the actual ego pose, and record scene_relocated plus requested/actual ego and primary locations in event_trace.json.
 - Reconstruct the scene from L0 scene_reconstruction/source state: preserve town/map, weather, ego pose, nearest front actor, and relevant nearby actors as much as CARLA spawn constraints allow.
 - Treat carla_plan.trigger_frame as a local frame in the generated L4 simulation, not as an original SafeBench global frame.
 - Follow scenario_config.time_axis_policy: start from scene_reconstruction.source_frame, trigger at local_trigger_frame, then continue until --frames.
@@ -1739,6 +1776,7 @@ Edit the existing script in place. Keep the same CLI arguments and output behavi
 Read scenario_config.risk_object_spec first and repair the script so that exact primary risk object/action is implemented.
 Treat scenario_config.physical_task as the hard execution contract. If the script does not satisfy physical_task.success_criteria, change the physical scene, not just the trace.
 If ego or a vehicle primary actor spawned at `(0,0,0)` or far from the requested L0 pose, repair the spawn logic: use waypoint projection near the requested L0 location, small z offsets, and nearby lane shifts, then verify the live actor location. Do not switch to an unrelated spawn point.
+If exact ego L0 spawning still fails after those retries, follow scenario_config.spawn_policy: relocate the entire scene to a valid ego spawn, preserve relative geometry by recomputing primary/background poses from the actual ego transform, enter the frame loop, save risk images, and record relocation metadata in event_trace.json.
 Fix the root cause, especially CARLA import/scope errors such as UnboundLocalError from referencing carla before import.
 If the failure mentions event_trace, implement or fix --output-dir/event_trace.json according to scenario_config.event_contract.
 If the failure mentions semantic validation, change the physical scene so the primary actor satisfies event_contract.numeric_acceptance; do not fake trace values.
@@ -2005,7 +2043,7 @@ def validate_event_trace_semantics(config, trace, frames):
             or ((risk_spec.get("geometry") or {}).get("start_world"))
         )
         all_actor_points = point_values(frames, "vulnerable_actor_position")
-        if configured_start and all_actor_points:
+        if configured_start and all_actor_points and not trace.get("scene_relocated"):
             initial_error = point_distance(configured_start, all_actor_points[0])
             require(
                 initial_error <= 5.0,
@@ -2069,7 +2107,7 @@ def validate_event_trace_semantics(config, trace, frames):
         all_actor_points = point_values(frames, "primary_actor_position")
         configured_location = (physical_task.get("primary_actor") or {}).get("initial_location")
         configured_point = point_from_value(configured_location)
-        if configured_point and all_actor_points:
+        if configured_point and all_actor_points and not trace.get("scene_relocated"):
             initial_error = point_distance(configured_point, all_actor_points[0])
             require(
                 initial_error <= 3.0,

@@ -12,6 +12,7 @@ Shared fields:
 - `scene_reconstruction`: compact L0 state used to rebuild the original scene context.
 - `source_l0_state_file`: original L0 state path when provided.
 - `reconstruction_policy`: requirements for preserving the L0 scene identity.
+- `spawn_policy`: fallback policy when exact L0 absolute poses are not spawnable after reloading CARLA.
 - `event_contract`: required per-chain event trace output. Treat this as a hard acceptance contract.
 - `carla_plan.actor_motion_plan`: explicit movement/behavior plan for all important actors after the L0 snapshot.
 - `l4_plan_agent`: optional LLM translation from the natural-language L3 chain into the executable plan and object constraints.
@@ -54,6 +55,14 @@ When `scene_reconstruction` is present, use it before generic spawn points:
 - `scene_reconstruction.weather`: weather to apply.
 - `scene_reconstruction.nearest_front_actor`: actor to recreate for front-vehicle events.
 - `scene_reconstruction.actors`: relevant nearby actors to optionally recreate.
+
+Spawn policy:
+
+- Prefer the exact L0 ego and actor poses, with small z offsets and nearby waypoint projection.
+- If exact ego L0 spawning fails, `spawn_policy.relative_relocation_allowed` permits moving the entire L4 scene to a valid ego spawn/waypoint.
+- When relocating, recompute the primary actor and relevant participants from the actual ego transform using their L0 relative longitudinal/lateral offsets. Do not keep the primary actor at the old absolute L0 world coordinate after relocating ego.
+- Record relocation metadata in `event_trace.json`: `scene_relocated`, `relocation_reason`, `requested_ego_location`, `actual_ego_location`, `requested_primary_location`, and `actual_primary_initial_location`.
+- Never accept `(0,0,0)` as a valid ego or primary actor spawn.
 
 Risk images:
 

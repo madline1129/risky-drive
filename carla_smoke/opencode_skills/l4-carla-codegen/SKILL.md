@@ -42,6 +42,7 @@ Use this skill when asked to create or fix `generated_risk_scene.py` for the Cha
 - Preserve the L0 scene identity where possible: use the L0 map, weather, ego transform, actor types, relative distances, and lane relationships.
 - If a L0 transform is occupied, move minimally along the lane or upward in z; do not switch to an unrelated map region.
 - For ego and vehicle primary actors, raw L0 coordinates may need waypoint projection before spawning. Use a nearby driving-lane waypoint and small local offsets, then verify the live location. Never accept an actor spawned at `(0,0,0)`.
+- Follow `scenario_config.spawn_policy`. If exact ego L0 spawning fails after waypoint and z-offset retries, relocate the entire scene to a valid ego spawn/waypoint, recompute primary/background actor poses relative to the actual ego pose, save images, and record relocation metadata in `event_trace.json`. Do not fail before the frame loop solely because the exact L0 ego pose cannot spawn.
 - For `front_vehicle_brake`, do not spawn payloads, metal pipes, or projectile objects.
 - For `vulnerable_actor_intrusion`, the vulnerable actor must cross into the ego lane while the ego is still moving; the front vehicle is only an occluder/context actor.
 - For `cargo_drop`, the payload must be the moving risk actor; do not reduce it to a generic front-car braking scene.
