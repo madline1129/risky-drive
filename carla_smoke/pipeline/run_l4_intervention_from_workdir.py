@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -13,9 +14,14 @@ try:
         build_config,
         chain_output_dir,
         chains_from_data,
+        copy_tree_contents,
+        normalize_opencode_model_name,
+        opencode_skills_dir,
         read_json,
         select_chain,
         validate_event_trace,
+        validate_risk_image_layout,
+        validate_risk_images,
         write_json,
     )
 except ImportError:
@@ -23,9 +29,14 @@ except ImportError:
         build_config,
         chain_output_dir,
         chains_from_data,
+        copy_tree_contents,
+        normalize_opencode_model_name,
+        opencode_skills_dir,
         read_json,
         select_chain,
         validate_event_trace,
+        validate_risk_image_layout,
+        validate_risk_images,
         write_json,
     )
 
@@ -37,6 +48,21 @@ def repo_root_from_this_file():
 def run_command(command):
     print("\n$ " + " ".join(command))
     subprocess.run(command, check=True)
+
+
+def run_command_capture(command):
+    print("\n$ " + " ".join(command))
+    result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if result.stdout:
+        print(result.stdout, end="")
+    return result.stdout or ""
+
+
+def error_output(exc):
+    output = getattr(exc, "output", None) or getattr(exc, "stdout", None)
+    if output:
+        return str(output)
+    return repr(exc)
 
 
 def read_json_if_exists(path):
@@ -83,29 +109,158 @@ def plan_agent_args_from_args(args):
     )
 
 
-def run_one_chain(args, repo_root, run_dir, chain, chain_index, all_chains, l0_state, l0_json, scenic_file, output_root):
-    chain_dir = chain_output_dir(output_root, chain, chain_index + 1, all_chains)
-    os.makedirs(chain_dir, exist_ok=True)
-    config = build_config(
-        chain,
-        l0_state,
-        l0_json,
-        l4_frames=args.frames,
-        local_trigger_frame=args.local_trigger_frame,
-        pre_trigger_seconds=args.pre_trigger_seconds,
-        source_timestep=args.source_timestep,
-        plan_agent_args=plan_agent_args_from_args(args),
-    )
-    config["execution_backend"] = "safebench_intervention"
-    config_path = os.path.join(chain_dir, "scenario_config.json")
-    write_json(config_path, config)
-    print(f"Saved intervention scenario config: {os.path.abspath(config_path)}")
+def prepare_opencode_intervention_workspace(args, repo_root, chain_dir, config_path, l0_json, scenic_file):
+    workspace = os.path.join(chain_dir, "opencode_safebench_workspace")
+    os.makedirs(workspace, exist_ok=True)
 
-    images_dir = os.path.join(chain_dir, "risk_images")
-    intervention_script = os.path.join(repo_root, "carla_smoke", "scenes", "safebench_intervention_scene.py")
+    workspace_config = os.path.join(workspace, "scenario_config.json")
+    workspace_l0 = os.path.join(workspace, "l0_state.json")
+    output_script = os.path.join(workspace, "generated_safebench_intervention.py")
+    seed_script = os.path.join(repo_root, "carla_smoke", "scenes", "safebench_intervention_scene.py")
+
+    shutil.copyfile(config_path, workspace_config)
+    shutil.copyfile(l0_json, workspace_l0)
+    shutil.copyfile(seed_script, output_script)
+    shutil.copyfile(seed_script, os.path.join(workspace, "reference_safebench_intervention.py"))
+    with open(os.path.join(workspace, "scenic_file.txt"), "w", encoding="utf-8") as f:
+        f.write(os.path.abspath(scenic_file) + "\n")
+
+    workspace_skills = os.path.join(workspace, ".opencode", "skills")
+    copy_tree_contents(opencode_skills_dir(), workspace_skills)
+
+    old_refs = os.path.join(workspace_skills, "l4-carla-codegen", "references")
+    context_dir = os.path.join(workspace, "context")
+    if os.path.isdir(old_refs):
+        copy_tree_contents(old_refs, context_dir)
+
+    with open(os.path.join(workspace, "AGENTS.md"), "w", encoding="utf-8") as f:
+        f.write(
+            "# OpenCode Workspace Instructions\n\n"
+            "Use the `l4-safebench-intervention-codegen` skill for this workspace.\n"
+            "Edit only `generated_safebench_intervention.py`.\n"
+            "This backend must replay the original SafeBench/Scenic scene and perturb live actors in-place.\n"
+            "Do not write a fresh-world L4 script, do not spawn a replacement ego, and do not call client.load_world.\n"
+        )
+
+    write_json(
+        os.path.join(workspace, "opencode_inputs.json"),
+        {
+            "workspace_config": workspace_config,
+            "l0_state": workspace_l0,
+            "output_script": output_script,
+            "seed_script": seed_script,
+            "scenic_file": os.path.abspath(scenic_file),
+            "skill": "l4-safebench-intervention-codegen",
+        },
+    )
+    return workspace, workspace_config, output_script
+
+
+def opencode_intervention_prompt(config_path, output_script, scenic_file):
+    return f"""Use the l4-safebench-intervention-codegen skill.
+
+Task:
+- Read scenario_config.json at:
+  {config_path}
+- Read l0_state.json if it exists.
+- Read scenic_file.txt. The SafeBench Scenic file to replay is:
+  {scenic_file}
+- Edit the SafeBench replay intervention script in place at exactly:
+  {output_script}
+
+Hard requirement:
+- The generated script must perturb the original SafeBench/Scenic replayed scene.
+- Do not create a fresh CARLA L4 world.
+- Do not implement spawn_ego_near_l0.
+- Do not call client.load_world.
+- Do not spawn a replacement ego vehicle.
+- Keep the ScenicSimulator replay flow intact.
+
+What to edit:
+- Improve actor matching for the primary risk object from scenario_config.risk_object_spec.
+- Improve generated actor setup only when the scenario requires a generated primary object.
+- Improve apply_intervention so the primary object physically performs the requested risk event.
+- Improve event_trace fields so validation can prove the physical event happened.
+
+Scenario rules:
+- front_vehicle_brake: match the live SafeBench front vehicle and brake/decelerate it. No payloads, no walkers.
+- side_vehicle_intrusion: match the live SafeBench side vehicle and move it laterally toward the ego lane.
+- vulnerable_actor_intrusion: use/spawn a vulnerable actor following risk_object_spec.geometry.path_world/start/end points.
+- road_obstacle_intrusion: move/place the obstacle into the ego lane according to risk_object_spec.geometry.
+- cargo_drop: make the payload the primary event.
+
+Output requirements:
+- Save top-level six-view montage images as risk_rgb_XXXX.png in --output-dir.
+- Write --output-dir/event_trace.json with top-level frames list.
+- Preserve the existing CLI.
+- Keep the script self-contained enough to run from this workspace.
+- Before finishing, ensure it would pass python -m py_compile and --help.
+- Do not write Markdown. Edit only the requested Python file.
+"""
+
+
+def opencode_intervention_repair_prompt(config_path, output_script, error_output):
+    return f"""The SafeBench intervention script failed.
+
+Use the l4-safebench-intervention-codegen skill.
+
+Scenario config:
+  {config_path}
+
+Script to fix:
+  {output_script}
+
+Execution or validation error:
+{error_output}
+
+Repair the existing SafeBench replay intervention script in place.
+Do not switch back to a fresh-world generated_risk_scene.py design.
+Do not add spawn_ego_near_l0, client.load_world, or replacement ego spawning.
+Keep the ScenicSimulator replay flow and fix only actor matching, intervention logic, trace fields, or camera/output behavior.
+Do not write Markdown. Edit only the requested Python file.
+"""
+
+
+def run_opencode_intervention(args, repo_root, chain_dir, config_path, l0_json, scenic_file):
+    opencode_bin = shutil.which(args.opencode_bin)
+    if not opencode_bin:
+        raise RuntimeError(f"opencode binary not found: {args.opencode_bin}")
+
+    workspace, workspace_config, output_script = prepare_opencode_intervention_workspace(
+        args,
+        repo_root,
+        chain_dir,
+        config_path,
+        l0_json,
+        scenic_file,
+    )
+    prompt = opencode_intervention_prompt(workspace_config, output_script, scenic_file)
+    with open(os.path.join(workspace, "opencode_prompt.txt"), "w", encoding="utf-8") as f:
+        f.write(prompt)
+    command = [
+        opencode_bin,
+        "run",
+        "--model",
+        normalize_opencode_model_name(args.opencode_model),
+        "--dir",
+        workspace,
+        prompt,
+    ]
+    run_command(command)
+    if not os.path.exists(output_script):
+        raise RuntimeError(f"opencode did not create expected script: {output_script}")
+    return output_script
+
+
+def validate_intervention_script(script_path):
+    run_command_capture([sys.executable, "-m", "py_compile", script_path])
+    run_command_capture([sys.executable, script_path, "--help"])
+
+
+def run_intervention_script(args, script_path, config_path, l0_json, scenic_file, images_dir):
     command = [
         args.carla_python or sys.executable,
-        intervention_script,
+        script_path,
         "--scenario-config",
         config_path,
         "--l0-json",
@@ -143,14 +298,90 @@ def run_one_chain(args, repo_root, run_dir, chain, chain_index, all_chains, l0_s
     ]
     if args.pre_roll_frames is not None:
         command.extend(["--pre-roll-frames", str(args.pre_roll_frames)])
+    run_command_capture(command)
+
+
+def repair_opencode_intervention(args, config_path, script_path, error_output):
+    opencode_bin = shutil.which(args.opencode_bin)
+    if not opencode_bin:
+        raise RuntimeError(f"opencode binary not found: {args.opencode_bin}")
+    workspace = os.path.dirname(script_path)
+    prompt = opencode_intervention_repair_prompt(
+        os.path.join(workspace, "scenario_config.json"),
+        script_path,
+        error_output,
+    )
+    with open(os.path.join(workspace, "opencode_repair_prompt.txt"), "w", encoding="utf-8") as f:
+        f.write(prompt)
+    command = [
+        opencode_bin,
+        "run",
+        "--model",
+        normalize_opencode_model_name(args.opencode_model),
+        "--dir",
+        workspace,
+        prompt,
+    ]
     run_command(command)
-    if args.validate_event_trace:
-        validate_event_trace(config_path, images_dir)
+
+
+def run_script_with_repair(args, config_path, script_path, l0_json, scenic_file, images_dir):
+    last_error = ""
+    for attempt in range(args.opencode_repair_attempts + 1):
+        try:
+            validate_intervention_script(script_path)
+            run_intervention_script(args, script_path, config_path, l0_json, scenic_file, images_dir)
+            image_count = validate_risk_images(images_dir)
+            validate_risk_image_layout(config_path, images_dir)
+            print(f"Validated risk images: {image_count} files under {os.path.abspath(images_dir)}")
+            if args.validate_event_trace:
+                trace_path = validate_event_trace(config_path, images_dir)
+                print(f"Validated event trace: {os.path.abspath(trace_path)}")
+            return
+        except (subprocess.CalledProcessError, RuntimeError) as exc:
+            last_error = error_output(exc)
+            if attempt >= args.opencode_repair_attempts:
+                raise
+            print(f"\nSafeBench intervention script failed; asking opencode to repair ({attempt + 1}/{args.opencode_repair_attempts}).")
+            repair_opencode_intervention(args, config_path, script_path, last_error)
+
+
+def run_one_chain(args, repo_root, run_dir, chain, chain_index, all_chains, l0_state, l0_json, scenic_file, output_root):
+    chain_dir = chain_output_dir(output_root, chain, chain_index + 1, all_chains)
+    os.makedirs(chain_dir, exist_ok=True)
+    config = build_config(
+        chain,
+        l0_state,
+        l0_json,
+        l4_frames=args.frames,
+        local_trigger_frame=args.local_trigger_frame,
+        pre_trigger_seconds=args.pre_trigger_seconds,
+        source_timestep=args.source_timestep,
+        plan_agent_args=plan_agent_args_from_args(args),
+    )
+    config["execution_backend"] = "safebench_intervention"
+    config_path = os.path.join(chain_dir, "scenario_config.json")
+    write_json(config_path, config)
+    print(f"Saved intervention scenario config: {os.path.abspath(config_path)}")
+
+    images_dir = os.path.join(chain_dir, "risk_images")
+    if args.intervention_agent == "opencode":
+        intervention_script = run_opencode_intervention(args, repo_root, chain_dir, config_path, l0_json, scenic_file)
+        run_script_with_repair(args, config_path, intervention_script, l0_json, scenic_file, images_dir)
+    else:
+        intervention_script = os.path.join(repo_root, "carla_smoke", "scenes", "safebench_intervention_scene.py")
+        run_intervention_script(args, intervention_script, config_path, l0_json, scenic_file, images_dir)
+        image_count = validate_risk_images(images_dir)
+        validate_risk_image_layout(config_path, images_dir)
+        print(f"Validated risk images: {image_count} files under {os.path.abspath(images_dir)}")
+        if args.validate_event_trace:
+            validate_event_trace(config_path, images_dir)
     return {
         "chain_id": chain.get("id"),
         "output_dir": os.path.abspath(chain_dir),
         "scenario_config": os.path.abspath(config_path),
         "risk_images": os.path.abspath(images_dir),
+        "intervention_script": os.path.abspath(intervention_script),
     }
 
 
@@ -190,6 +421,15 @@ def main():
     parser.add_argument("--chain-index", type=int, default=0, help="Run one chain by default.")
     parser.add_argument("--all-chains", action="store_true")
     parser.add_argument("--continue-on-chain-error", action="store_true")
+    parser.add_argument(
+        "--intervention-agent",
+        choices=["opencode", "template"],
+        default="opencode",
+        help="opencode edits the SafeBench replay intervention template; template runs the fixed fallback executor.",
+    )
+    parser.add_argument("--opencode-bin", default="opencode")
+    parser.add_argument("--opencode-model", default="deepseek-v4-pro")
+    parser.add_argument("--opencode-repair-attempts", type=int, default=3)
     parser.add_argument("--validate-event-trace", action="store_true", default=True)
     parser.add_argument("--skip-event-trace-validation", action="store_true")
     parser.add_argument("--skip-plan-agent", action="store_true")

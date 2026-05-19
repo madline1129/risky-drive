@@ -135,6 +135,14 @@ def main():
             args.api_key_env,
             "--plan-timeout",
             str(args.plan_timeout),
+            "--intervention-agent",
+            "opencode" if args.code_agent == "opencode" else "template",
+            "--opencode-bin",
+            args.opencode_bin,
+            "--opencode-model",
+            args.opencode_model,
+            "--opencode-repair-attempts",
+            str(args.opencode_repair_attempts),
         ]
         if args.skip_plan_agent:
             command.append("--skip-plan-agent")
