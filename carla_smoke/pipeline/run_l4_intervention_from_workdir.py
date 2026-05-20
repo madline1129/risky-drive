@@ -185,7 +185,7 @@ What to edit:
 Scenario rules:
 - front_vehicle_brake: match the live SafeBench front vehicle and brake/decelerate it. No payloads, no walkers.
 - side_vehicle_intrusion: match the live SafeBench side vehicle and move it laterally toward the ego lane.
-- vulnerable_actor_intrusion: use/spawn a vulnerable actor following risk_object_spec.geometry.path_world/start/end points.
+- vulnerable_actor_intrusion: if risk_object_spec.primary_object.source is "l0_actor", match and perturb that original live vulnerable actor; only spawn a vulnerable actor when the primary object is explicitly generated. Follow risk_object_spec.geometry.path_world/start/end points.
 - road_obstacle_intrusion: move/place the obstacle into the ego lane according to risk_object_spec.geometry.
 - cargo_drop: make the payload the primary event.
 

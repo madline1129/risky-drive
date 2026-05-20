@@ -348,6 +348,22 @@ def prepare_generated_actor(carla, world, blueprints, ego, config, scenario_type
                 state.generated_end = carla.Location(x=target["x"], y=target["y"], z=target.get("z", state.generated_start.z))
 
 
+def configure_existing_actor_motion(carla, ego, config, scenario_type, state):
+    if state.primary_actor is None:
+        return
+    risk_spec = config.get("risk_object_spec") or {}
+    geometry = risk_spec.get("geometry") or {}
+    ego_transform = ego.get_transform()
+
+    if scenario_type == "vulnerable_actor_intrusion":
+        state.generated_start = state.primary_actor.get_location()
+        end = geometry.get("end_world")
+        if not end:
+            end_location = local_point_to_world(carla, ego_transform, {"x": 6.0, "y": -1.0, "z": 0.2})
+            end = location_dict(end_location)
+        state.generated_end = carla.Location(x=end["x"], y=end["y"], z=end.get("z", state.generated_start.z))
+
+
 def apply_intervention(carla, ego, config, scenario_type, state, local_frame, trigger_frame):
     if local_frame < trigger_frame:
         return
@@ -526,11 +542,14 @@ def run_intervention(args):
             drain_camera_queues(camera_queues)
 
         target_actor = l0_primary_actor(config, l0_state)
-        if scenario_type in {"front_vehicle_brake", "side_vehicle_intrusion"}:
+        primary_source = (primary_object_from_config(config) or {}).get("source")
+        must_use_l0_primary = primary_source == "l0_actor"
+        if scenario_type in {"front_vehicle_brake", "side_vehicle_intrusion"} or must_use_l0_primary:
             state.primary_actor = match_live_actor(world, ego, target_actor or {}, scenario_type)
             if state.primary_actor is None:
                 raise RuntimeError(f"Could not match a live SafeBench actor for {scenario_type}.")
             state.reported_primary_id = (target_actor or {}).get("id") or state.primary_actor.id
+            configure_existing_actor_motion(carla, ego, config, scenario_type, state)
             print(f"Matched primary actor: id={state.primary_actor.id} type={state.primary_actor.type_id}")
         else:
             prepare_generated_actor(carla, world, blueprints, ego, config, scenario_type, state)

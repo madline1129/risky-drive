@@ -17,6 +17,7 @@ L2 触发事件假设：
 - 对每个 L1 脆弱点，构思具体的触发事件。
 - 这些触发事件是“反事实干预”：如果这个事件发生，当前风险薄弱点会被激活，并进入后续事故链。
 - L2 只描述具体触发事件，不展开事故链，不写 CARLA 执行方案，不指定掉落物/轨迹/脚本参数；这些属于 L3/L4。
+- 如果 L1 已经给出 actor_list / selected_actor / primary_perturbation_object，必须原样继承；source="l0_actor" 的对象不能改写成 generated_actor。
 - 平均每个 L1 给出 2 个触发事件。
 - 如果 L1 有 5 个风险，则总共输出 10 个 L2 触发事件。
 
@@ -41,6 +42,9 @@ L2 触发事件假设：
       "mechanism": "为什么该事件会激活对应L1风险",
       "immediate_effect": "触发后最直接的状态变化，不要展开为事故链",
       "required_preconditions": ["该触发事件成立需要哪些前提"],
+      "actor_list": [],
+      "selected_actor": {},
+      "primary_perturbation_object": {},
       "observability": "可由图像确认/需要多帧确认/需要仿真状态确认/纯假设",
       "plausibility": "低/中/高",
       "boundary": "L2只定义触发事件，L3再展开物理演化"
@@ -52,6 +56,7 @@ L2 触发事件假设：
 - trigger_event_hypotheses 必须正好 10 项。
 - 每个 L1 风险默认生成 2 个 L2 触发事件，id 形如 L2-1a、L2-1b、L2-2a、L2-2b。
 - 不要重新识别图像；只能基于输入 JSON 做推演。
+- L1 选中的原始 L0 actor 必须继续作为本触发事件的 selected_actor；只有 L1 明确没有原始对象时，后续才允许新增 generated_actor。
 - 触发事件必须具体、可在 CARLA 或规则脚本中实现/近似实现。
 - 触发事件只到“初始触发”，不要直接跳到 L3/L4 的事故链、对象轨迹、二次事故或代码参数。
 """
@@ -124,9 +129,72 @@ def fallback_events_for_risk(risk, rank):
     return events
 
 
+def risk_by_rank(l1_data):
+    risks = l1_risks_from_data(l1_data)[:5]
+    mapping = {}
+    for idx, risk in enumerate(risks, start=1):
+        if not isinstance(risk, dict):
+            continue
+        mapping[idx] = risk
+        try:
+            mapping[int(risk.get("rank"))] = risk
+        except (TypeError, ValueError):
+            pass
+    return mapping
+
+
+def primary_role_for_event(event, risk):
+    text = " ".join(
+        str(value)
+        for value in [
+            (event or {}).get("trigger_name"),
+            (event or {}).get("counterfactual_intervention"),
+            (risk or {}).get("name"),
+            (risk or {}).get("weakness_reason"),
+        ]
+        if value
+    )
+    if any(keyword in text for keyword in ["行人", "骑行", "自行车", "弱势", "滑倒", "转向"]):
+        return "vulnerable_actor"
+    if any(keyword in text for keyword in ["前车", "跟车", "急刹", "减速", "停滞", "刹车"]):
+        return "front_vehicle"
+    if any(keyword in text for keyword in ["侧方", "侧后方", "变道", "车道空间"]):
+        return "side_vehicle"
+    return "primary_actor"
+
+
+def inherit_actor_context(event, risk):
+    if not isinstance(event, dict) or not isinstance(risk, dict):
+        return event
+    if isinstance(risk.get("actor_list"), list) and "actor_list" not in event:
+        event["actor_list"] = risk["actor_list"]
+    if isinstance(risk.get("selected_actor"), dict) and "selected_actor" not in event:
+        event["selected_actor"] = risk["selected_actor"]
+    source_primary = risk.get("primary_perturbation_object") or risk.get("selected_actor")
+    if isinstance(source_primary, dict) and "primary_perturbation_object" not in event:
+        primary = dict(source_primary)
+        primary["role"] = primary_role_for_event(event, risk)
+        primary["must_drive_primary_event"] = True
+        event["primary_perturbation_object"] = primary
+    if isinstance(risk.get("new_actor_generation_policy"), dict) and "new_actor_generation_policy" not in event:
+        event["new_actor_generation_policy"] = risk["new_actor_generation_policy"]
+    return event
+
+
+def risk_for_event(risks_by_rank, event):
+    rank = (event or {}).get("parent_l1_rank")
+    if rank in risks_by_rank:
+        return risks_by_rank[rank]
+    try:
+        return risks_by_rank.get(int(rank))
+    except (TypeError, ValueError):
+        return None
+
+
 def normalize_output(parsed, l1_data, source_l1_file):
     events = parsed.get("trigger_event_hypotheses", []) if isinstance(parsed, dict) else []
     normalized = []
+    risks_by_rank = risk_by_rank(l1_data)
     if isinstance(events, list):
         for idx, event in enumerate(events[:10], start=1):
             if not isinstance(event, dict):
@@ -138,6 +206,7 @@ def normalize_output(parsed, l1_data, source_l1_file):
             if "immediate_effect" not in event and "direct_physical_outcome" in event:
                 event["immediate_effect"] = event.pop("direct_physical_outcome")
             event.setdefault("boundary", "L2只定义触发事件，L3再展开物理演化")
+            inherit_actor_context(event, risk_for_event(risks_by_rank, event))
             normalized.append(event)
 
     risks = l1_risks_from_data(l1_data)[:5]
@@ -148,6 +217,7 @@ def normalize_output(parsed, l1_data, source_l1_file):
         for event in fallback_events_for_risk(risk, idx):
             if len([item for item in normalized if item.get("parent_l1_rank") == idx]) >= 2:
                 break
+            inherit_actor_context(event, risk)
             normalized.append(event)
 
     while len(normalized) < 10:
@@ -177,6 +247,7 @@ def normalize_output(parsed, l1_data, source_l1_file):
         event["id"] = f"L2-{rank}{suffix}"
         event.setdefault("parent_l1_rank", rank)
         event.setdefault("boundary", "L2只定义触发事件，L3再展开物理演化")
+        inherit_actor_context(event, risk_for_event(risks_by_rank, event))
 
     return {
         "level": "L2",

@@ -120,7 +120,8 @@ Only implement pedestrian/cyclist intrusion.
 - `carla_plan.crossing_direction`: side-to-side motion direction.
 - `carla_plan.speed_mps`: actor motion speed.
 - Prefer `risk_object_spec.geometry.start_world` and `end_world` over raw `carla_plan.start_position`.
-- Spawn the vulnerable actor near `risk_object_spec.primary_object.initial_location`, then move it along `risk_object_spec.geometry.path_world`.
+- If `risk_object_spec.primary_object.source == "l0_actor"`, use that original actor id/type/pose as the primary vulnerable actor and do not spawn a generated replacement.
+- If `risk_object_spec.primary_object.source == "generated_actor"`, spawn the vulnerable actor near `risk_object_spec.primary_object.initial_location`, then move it along `risk_object_spec.geometry.path_world`.
 - Never reset the actor to `(0, 0, 0)` or reinterpret a precomputed world point as a local offset.
 
 ## `road_obstacle_intrusion`

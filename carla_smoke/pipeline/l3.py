@@ -18,6 +18,7 @@ L3 初始事故链：
 - L3 不是最终事故，也不是二次事故；只描述触发后第一段物理演化。
 - L3 只写自然语言事故链和涉及物体清单，不生成 CARLA 代码，不需要生成 carla_plan。
 - 如果 L2/L1 已经传入 primary_perturbation_object / perturbation_target，必须继承，不要换主风险物体。
+- 如果上游对象 source="l0_actor"，必须保留 actor_id、type_id、location、rotation、relative_longitudinal_m、relative_lateral_m 等原始字段；不能改成 generated_object。
 - 对于事故链涉及多个物体的情况，用 chain_participants 列清楚：谁是主扰动物体，谁是 ego，谁只是背景/遮挡/受影响对象。
 - 背景对象必须标注 must_not_drive_primary_event=true，避免后续 L4/code agent 把背景对象当成主风险。
 
@@ -83,6 +84,93 @@ def trigger_events_from_data(data):
     if isinstance(data, list):
         return data
     return []
+
+
+def event_by_l2_id(events):
+    mapping = {}
+    for idx, event in enumerate(events, start=1):
+        if not isinstance(event, dict):
+            continue
+        mapping[idx] = event
+        if event.get("id") is not None:
+            mapping[str(event.get("id"))] = event
+    return mapping
+
+
+def event_primary_object(event, scenario_type=None):
+    if not isinstance(event, dict):
+        return None
+    primary = event.get("primary_perturbation_object") or event.get("selected_actor")
+    if not isinstance(primary, dict):
+        return None
+    primary = dict(primary)
+    role_by_scenario = {
+        "front_vehicle_brake": "front_vehicle",
+        "vulnerable_actor_intrusion": "vulnerable_actor",
+        "road_obstacle_intrusion": "road_obstacle",
+        "cargo_drop": "payload",
+    }
+    primary.setdefault("role", role_by_scenario.get(scenario_type, "primary_actor"))
+    primary["must_drive_primary_event"] = True
+    return primary
+
+
+def apply_primary_object_to_plan(carla_plan, primary):
+    if not isinstance(carla_plan, dict) or not isinstance(primary, dict):
+        return carla_plan
+    if primary.get("source") != "l0_actor":
+        return carla_plan
+    actor_id = primary.get("actor_id", primary.get("id"))
+    carla_plan["primary_actor_id"] = actor_id
+    carla_plan["primary_actor_source"] = "l0_actor"
+    if primary.get("kind") is not None:
+        carla_plan["primary_actor_kind"] = primary.get("kind")
+    if primary.get("type_id") is not None:
+        carla_plan["primary_actor_type_id"] = primary.get("type_id")
+    motion_plan = carla_plan.setdefault("actor_motion_plan", {})
+    if isinstance(motion_plan, dict):
+        primary_motion = motion_plan.setdefault("primary_actor", {})
+        if isinstance(primary_motion, dict):
+            primary_motion["actor_id"] = actor_id
+            primary_motion["source"] = "l0_actor"
+            primary_motion["type_id"] = primary.get("type_id")
+            primary_motion["must_not_spawn_replacement"] = True
+    return carla_plan
+
+
+def chain_participants_from_event(event, primary):
+    participants = [
+        {"source": "l0_ego", "actor_id": "ego", "kind": "ego", "role": "affected_actor", "must_drive_primary_event": False}
+    ]
+    if isinstance(primary, dict):
+        participants.append(dict(primary))
+    for actor in event.get("actor_list", []) if isinstance(event, dict) and isinstance(event.get("actor_list"), list) else []:
+        if not isinstance(actor, dict):
+            continue
+        actor_id = actor.get("actor_id", actor.get("id"))
+        if isinstance(primary, dict) and actor_id == primary.get("actor_id", primary.get("id")):
+            continue
+        background = dict(actor)
+        background.setdefault("role", "background_or_context")
+        background["must_not_drive_primary_event"] = True
+        participants.append(background)
+    return participants
+
+
+def inherit_event_context(chain, event):
+    if not isinstance(chain, dict) or not isinstance(event, dict):
+        return chain
+    scenario_type = (chain.get("carla_plan") or {}).get("scenario_type") if isinstance(chain.get("carla_plan"), dict) else None
+    primary = event_primary_object(event, scenario_type)
+    if primary and "primary_perturbation_object" not in chain:
+        chain["primary_perturbation_object"] = primary
+    if isinstance(event.get("actor_list"), list) and "actor_list" not in chain:
+        chain["actor_list"] = event["actor_list"]
+    if primary and "chain_participants" not in chain:
+        chain["chain_participants"] = chain_participants_from_event(event, primary)
+    if primary and isinstance(chain.get("carla_plan"), dict):
+        apply_primary_object_to_plan(chain["carla_plan"], primary)
+    return chain
 
 
 def cargo_drop_plan(trigger_frame=45, object_type="metal_pipe"):
@@ -247,27 +335,73 @@ def sanitize_carla_plan(plan):
     trigger_frame = int(plan.get("trigger_frame", 45) or 45)
     if scenario_type == "front_vehicle_brake":
         sanitized = front_vehicle_brake_plan(trigger_frame)
-        for key in ["target_actor", "brake_intensity", "deceleration_mps2", "target_speed_mps", "expected_visual_result", "actor_motion_plan"]:
+        for key in [
+            "target_actor",
+            "brake_intensity",
+            "deceleration_mps2",
+            "target_speed_mps",
+            "expected_visual_result",
+            "actor_motion_plan",
+            "primary_actor_id",
+            "primary_actor_source",
+            "primary_actor_kind",
+            "primary_actor_type_id",
+        ]:
             if key in plan:
                 sanitized[key] = plan[key]
         return sanitized
 
     if scenario_type == "vulnerable_actor_intrusion":
         sanitized = vulnerable_actor_intrusion_plan(trigger_frame, plan.get("actor_type", "walker"))
-        for key in ["spawn_relative_to", "start_position", "crossing_direction", "speed_mps", "expected_visual_result", "actor_motion_plan"]:
+        for key in [
+            "spawn_relative_to",
+            "start_position",
+            "crossing_direction",
+            "speed_mps",
+            "expected_visual_result",
+            "actor_motion_plan",
+            "primary_actor_id",
+            "primary_actor_source",
+            "primary_actor_kind",
+            "primary_actor_type_id",
+        ]:
             if key in plan:
                 sanitized[key] = plan[key]
         return sanitized
 
     if scenario_type == "cargo_drop":
         sanitized = cargo_drop_plan(trigger_frame, plan.get("object_type", "metal_pipe"))
-        for key in ["target_actor", "object_type", "object_count", "spawn_relative_to", "initial_position", "motion", "expected_visual_result", "actor_motion_plan"]:
+        for key in [
+            "target_actor",
+            "object_type",
+            "object_count",
+            "spawn_relative_to",
+            "initial_position",
+            "motion",
+            "expected_visual_result",
+            "actor_motion_plan",
+            "primary_actor_id",
+            "primary_actor_source",
+            "primary_actor_kind",
+            "primary_actor_type_id",
+        ]:
             if key in plan:
                 sanitized[key] = plan[key]
         return sanitized
 
     sanitized = road_obstacle_intrusion_plan(trigger_frame)
-    for key in ["object_type", "spawn_relative_to", "initial_position", "motion", "expected_visual_result", "actor_motion_plan"]:
+    for key in [
+        "object_type",
+        "spawn_relative_to",
+        "initial_position",
+        "motion",
+        "expected_visual_result",
+        "actor_motion_plan",
+        "primary_actor_id",
+        "primary_actor_source",
+        "primary_actor_kind",
+        "primary_actor_type_id",
+    ]:
         if key in plan:
             sanitized[key] = plan[key]
     return sanitized
@@ -300,8 +434,10 @@ def fallback_plan_for_event(event, index):
         carla_plan = road_obstacle_intrusion_plan()
 
     carla_plan["scenario_type"] = scenario_type
+    primary = event_primary_object(event, scenario_type)
+    apply_primary_object_to_plan(carla_plan, primary)
 
-    return {
+    chain = {
         "level": "L3",
         "id": f"L3-{index}",
         "parent_l2_id": event_id,
@@ -310,6 +446,12 @@ def fallback_plan_for_event(event, index):
         "direct_physical_outcome": outcome,
         "carla_plan": carla_plan,
     }
+    if primary:
+        chain["primary_perturbation_object"] = primary
+        chain["chain_participants"] = chain_participants_from_event(event, primary)
+    if isinstance(event, dict) and isinstance(event.get("actor_list"), list):
+        chain["actor_list"] = event["actor_list"]
+    return chain
 
 
 def build_prompt(l2_data, l0_data):
@@ -320,6 +462,8 @@ def build_prompt(l2_data, l0_data):
 def normalize_output(parsed, l2_data, source_l2_file):
     chains = parsed.get("initial_accident_chains", []) if isinstance(parsed, dict) else []
     normalized = []
+    events = trigger_events_from_data(l2_data)[:10]
+    events_by_id = event_by_l2_id(events)
     if isinstance(chains, list):
         for idx, chain in enumerate(chains[:10], start=1):
             if not isinstance(chain, dict):
@@ -328,9 +472,9 @@ def normalize_output(parsed, l2_data, source_l2_file):
             chain.setdefault("id", f"L3-{idx}")
             if isinstance(chain.get("carla_plan"), dict):
                 chain["carla_plan"] = sanitize_carla_plan(chain.get("carla_plan"))
+            inherit_event_context(chain, events_by_id.get(chain.get("parent_l2_id")) or events_by_id.get(idx))
             normalized.append(chain)
 
-    events = trigger_events_from_data(l2_data)[:10]
     for idx, event in enumerate(events, start=1):
         if len(normalized) >= idx:
             continue

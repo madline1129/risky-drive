@@ -31,10 +31,11 @@ Use this skill when asked to edit `generated_safebench_intervention.py` for the 
 - For existing primary objects, match a live actor in the replayed SafeBench scene by type, relative longitudinal/lateral distance to ego, and role from `risk_object_spec`.
 - For generated risk objects such as pedestrians, obstacles, or payloads, spawn only the primary generated object needed for the risk event; do not replace the SafeBench base scene.
 - Respect `scenario_config.risk_object_spec.primary_object` as the main perturbed object.
+- If `scenario_config.risk_object_spec.primary_object.source == "l0_actor"`, preserve that original actor identity. Match and perturb the live SafeBench actor; do not spawn a generated replacement with a similar role.
 - Respect `scenario_config.physical_task` over free-form natural-language text.
 - For `front_vehicle_brake`, brake/decelerate the matched live front vehicle. Do not spawn payloads or pedestrians.
 - For `side_vehicle_intrusion`, move the matched live side vehicle laterally toward the ego lane.
-- For `vulnerable_actor_intrusion`, spawn or use a vulnerable actor following `risk_object_spec.geometry.path_world` or start/end world points.
+- For `vulnerable_actor_intrusion`, use the original vulnerable actor when `primary_object.source == "l0_actor"`; only spawn a vulnerable actor when the primary object is explicitly generated. Follow `risk_object_spec.geometry.path_world` or start/end world points.
 - For `road_obstacle_intrusion`, place or move the obstacle into the ego lane according to `risk_object_spec.geometry`.
 - For `cargo_drop`, make the payload the primary event; do not reduce it to front-vehicle braking.
 - Trace values must come from live CARLA actor state after the perturbation. Do not fabricate trace-only success.
