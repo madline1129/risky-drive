@@ -95,7 +95,7 @@ Do:
 - Build the primary actor transform directly from `physical_task.primary_actor.initial_location` and `initial_rotation`.
 - Immediately after spawning, compare `actor.get_location()` with the requested coordinates.
 - If the error is large, destroy the actor and retry near the requested pose with small `z` offsets only.
-- If it still cannot spawn near the requested pose, fail clearly instead of producing empty images.
+- If it still cannot spawn near the requested pose, use `scenario_config.spawn_policy` to relocate/recompute the scene around the actual ego pose while preserving relative longitudinal/lateral geometry. Fail clearly only if both exact spawn and relative relocation fail.
 
 ## 5. Raw L0 Pose Spawned at World Origin
 
@@ -113,7 +113,7 @@ Do not:
 
 - Accept `(0, 0, 0)` as a successful spawn.
 - Use a random map spawn point for a configured L0 primary actor.
-- Continue with images or trace after ego/primary actor is far from the requested L0 pose.
+- Continue with images or trace after ego/primary actor is far from both the requested L0 pose and the recomputed ego-relative pose.
 
 Do:
 
@@ -123,6 +123,32 @@ Do:
 - If exact ego spawning still fails and `scenario_config.spawn_policy.relative_relocation_allowed` is true, relocate the whole scene to a valid ego spawn and recompute primary/background poses from the actual ego transform while preserving relative longitudinal/lateral geometry.
 - Record relocation metadata in `event_trace.json`.
 - Fail clearly only if both exact spawning and relative relocation fail.
+
+## 5b. Exact L0 Pedestrian Spawn Was Over-Constrained
+
+Symptom:
+
+- The L0 risk actor was a real walker from a SafeBench frame.
+- The generated L4 script tried to spawn a new walker at the exact L0 absolute coordinate.
+- CARLA either failed to spawn the walker, placed it far away, or the scene became empty even though the relative risk idea was correct.
+
+Root cause:
+
+- The script treated a factual L0 actor position as a guaranteed legal spawn point.
+- Pedestrian spawning depends on navmesh and valid ground in the reloaded map; a snapshot coordinate is not always a valid new walker birth point.
+
+Do not:
+
+- Fail solely because the exact pedestrian absolute `(x, y, z)` cannot be reused.
+- Accept a random navigation point elsewhere in the map.
+- Replace the configured pedestrian-intrusion event with another template.
+
+Do:
+
+- Treat the L0 absolute pedestrian coordinate as a best-effort hint.
+- Preserve the pedestrian type/kind, side/front relation, and ego-relative longitudinal/lateral offset.
+- If the exact point is invalid, recompute the pedestrian start/end from the actual ego pose and use a nearby navmesh point that keeps the relative risk geometry.
+- Record requested/actual absolute locations, requested/actual relative offsets, `primary_relative_error_m`, and `scene_relocated` in `event_trace.json`.
 
 ## 6. `event_trace.frames` Was Not a Frame List
 
@@ -233,14 +259,40 @@ Do:
 - Use `risk_object_spec.geometry.path_world` as the world-space path.
 - Check consecutive vulnerable actor positions and fail if a single-frame displacement exceeds the configured maximum.
 
+## 11. `wp.next()` Was Called With a Negative Distance
+
+Symptom:
+
+- Code compiled.
+- The previous CARLA execution failed at runtime.
+- The error said `wp.next()` cannot take a negative number or a float could not be interpreted in that waypoint traversal path.
+- opencode then entered the repair loop for `generated_risk_scene.py`.
+
+Root cause:
+
+- The script tried to move backward along a lane by calling `waypoint.next(-distance)`.
+- CARLA `Waypoint.next(distance)` expects a non-negative distance.
+
+Do not:
+
+- Call `wp.next(-x)` or `waypoint.next(-x)`.
+- Hide this by only changing trace output.
+
+Do:
+
+- For backward lane movement, use `waypoint.previous(abs(distance))` when available.
+- Or compute a backward point with the actor/waypoint forward vector: `location - forward_vector * abs(distance)`.
+- Keep `waypoint.next(distance)` only for forward movement with `distance >= 0`.
+
 ## Final Pre-Flight Checklist
 
 Before finishing `generated_risk_scene.py`, verify these points in code:
 
 - `scenario_type` is exactly the configured type.
-- The primary actor source, id, type, and initial pose match `physical_task`.
+- The primary actor source, configured id, type/kind, relative position, and action match `physical_task`; exact absolute pose is best effort when relocation is needed.
 - The primary risk object, action, geometry, and forbidden substitutions match `risk_object_spec`.
-- Actor spawn location is checked after spawning.
+- Actor spawn location and ego-relative offset are checked after spawning.
+- No `waypoint.next()` call receives a negative distance.
 - The local trigger frame is inside `args.frames`.
 - Top-level `risk_rgb_XXXX.png` follows `physical_task.visualization`.
 - `event_trace.frames` is a list of real per-frame states.

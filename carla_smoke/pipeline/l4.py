@@ -1523,14 +1523,17 @@ def build_config(
         "event_contract": build_event_contract(plan),
         "scene_reconstruction": scene_reconstruction,
         "spawn_policy": {
-            "mode": "prefer_l0_absolute_pose_then_preserve_relative_scene",
-            "absolute_l0_pose_preferred": True,
+            "mode": "preserve_l0_relative_scene_geometry_with_best_effort_absolute_pose",
+            "absolute_l0_pose_preferred": False,
             "relative_relocation_allowed": True,
+            "relative_geometry_is_authoritative": True,
+            "relative_position_tolerance_m": 4.0,
+            "absolute_spawn_deviation_allowed_if_relative_geometry_preserved": True,
             "why": (
-                "Some SafeBench L0 poses are not directly spawnable after reloading CARLA. "
-                "If ego cannot be spawned near the requested L0 pose, relocate the whole L4 scene "
-                "to a nearby valid driving waypoint or spawn point while preserving ego-to-primary "
-                "and ego-to-participant relative geometry."
+                "SafeBench L0 absolute poses are factual snapshot coordinates, not guaranteed "
+                "CARLA spawn points after reloading the map. Prefer exact poses when they work, "
+                "but the hard requirement is preserving ego-to-primary and ego-to-participant "
+                "relative geometry, lane relationship, actor type, and risk action."
             ),
             "ego_spawn_order": [
                 "requested_l0_transform_with_small_z_offsets",
@@ -1542,6 +1545,11 @@ def build_config(
                 "must_preserve_relative_geometry": True,
                 "recompute_primary_actor_world_pose_from_actual_ego_pose": True,
                 "do_not_use_original_absolute_primary_pose_after_ego_relocation": True,
+                "relative_geometry_acceptance": (
+                    "It is acceptable for requested and actual absolute locations to differ "
+                    "when the actual ego-relative longitudinal/lateral offsets remain close "
+                    "to the L0/configured offsets and the risk event is visible."
+                ),
                 "record_in_event_trace": [
                     "scene_relocated",
                     "relocation_reason",
@@ -1549,12 +1557,16 @@ def build_config(
                     "actual_ego_location",
                     "requested_primary_location",
                     "actual_primary_initial_location",
+                    "requested_primary_relative_to_ego",
+                    "actual_primary_relative_to_ego",
+                    "primary_relative_error_m",
                 ],
             },
             "forbidden": [
                 "failing before the frame loop only because exact ego L0 pose cannot spawn",
                 "spawning ego at world origin",
                 "spawning primary actor at original absolute L0 pose after relocating ego",
+                "failing only because the primary actor absolute location differs while relative geometry is preserved",
                 "using an unrelated primary actor or changing scenario_type",
             ],
         },
@@ -1791,10 +1803,11 @@ Task:
 - Treat scenario_config.physical_task as the hard physical task order. It defines the primary actor, the action, timing, trace schema, and success criteria.
 - Before designing the scene, apply the checklist in context/failure_history.md. Do not repeat any listed failure mode.
 - If physical_task conflicts with free-form text such as chain_description or expected_visual_result, follow physical_task.
-- If physical_task.primary_actor.source or risk_object_spec.primary_object.source is "l0_actor", the primary event must use that same L0 actor id/type/initial pose as closely as CARLA spawn constraints allow. Do not replace it with a generic obstacle, generated pedestrian, or newly invented actor.
-- After spawning any actor from physical_task, immediately verify actor.get_location() is close to the requested initial_location. If the actor appears near world origin or a random spawn point, destroy it and retry near the requested L0 pose or fail clearly.
+- If physical_task.primary_actor.source or risk_object_spec.primary_object.source is "l0_actor", preserve that L0 actor as the semantic primary object: same configured actor id, type/kind, relative position to ego, and required action. The live CARLA actor id may differ in a fresh replay. Do not replace it with a generic obstacle, unrelated pedestrian, or different template.
+- Treat absolute L0 coordinates as best-effort spawn hints, not hard requirements. If the requested absolute primary location is not spawnable, relocate/recompute from the actual ego pose and preserve ego-relative longitudinal/lateral geometry within scenario_config.spawn_policy.relative_position_tolerance_m.
+- After spawning any actor from physical_task, verify actor.get_location(). If the actor appears near world origin or a random spawn point, destroy it and retry using either the requested L0 pose or the recomputed ego-relative pose from scenario_config.spawn_policy.
 - For ego and vehicle primary actors, raw L0 poses may not be directly spawnable. Project to a nearby driving-lane waypoint with world.get_map().get_waypoint(project_to_road=True, lane_type=carla.LaneType.Driving), try small z offsets and nearby lane shifts, then verify the live location. Never accept a spawn near (0,0,0).
-- Follow scenario_config.spawn_policy. If ego cannot spawn near the exact L0 pose after waypoint/z-offset retries, do not fail before the frame loop. Relocate the whole scene to the closest valid driving spawn/waypoint, recompute primary/background actor poses relative to the actual ego pose, and record scene_relocated plus requested/actual ego and primary locations in event_trace.json.
+- Follow scenario_config.spawn_policy. If ego or the primary actor cannot spawn near the exact L0 pose after waypoint/z-offset/navmesh retries, do not fail before the frame loop. Relocate the whole scene to the closest valid driving spawn/waypoint, recompute primary/background actor poses relative to the actual ego pose, and record scene_relocated plus requested/actual ego and primary relative locations in event_trace.json.
 - Never raise RuntimeError only because the exact L0 ego pose cannot be spawned. Use the nearest valid CARLA spawn point or projected driving waypoint, record ego_spawn_deviation_m in event_trace.json, and continue far enough to save risk_rgb_XXXX.png.
 - Reconstruct the scene from L0 scene_reconstruction/source state: preserve town/map, weather, ego pose, nearest front actor, and relevant nearby actors as much as CARLA spawn constraints allow.
 - Treat carla_plan.trigger_frame as a local frame in the generated L4 simulation, not as an original SafeBench global frame.
@@ -1846,8 +1859,9 @@ Execution error:
 Edit the existing script in place. Keep the same CLI arguments and output behavior.
 Read scenario_config.risk_object_spec first and repair the script so that exact primary risk object/action is implemented.
 Treat scenario_config.physical_task as the hard execution contract. If the script does not satisfy physical_task.success_criteria, change the physical scene, not just the trace.
-If ego or a vehicle primary actor spawned at `(0,0,0)` or far from the requested L0 pose, repair the spawn logic: use waypoint projection near the requested L0 location, small z offsets, and nearby lane shifts, then verify the live actor location. Do not switch to an unrelated spawn point.
-If exact ego L0 spawning still fails after those retries, follow scenario_config.spawn_policy: relocate the entire scene to a valid ego spawn, preserve relative geometry by recomputing primary/background poses from the actual ego transform, enter the frame loop, save risk images, and record relocation metadata plus ego_spawn_deviation_m in event_trace.json. Do not raise RuntimeError only because the requested L0 ego pose was not spawnable.
+If ego or a vehicle primary actor spawned at `(0,0,0)` or far from both the requested L0 pose and the recomputed ego-relative pose, repair the spawn logic: use waypoint projection near the requested L0 location, small z offsets, nearby lane shifts, or scenario_config.spawn_policy relative relocation, then verify the live actor location. Do not switch to an unrelated spawn point.
+If exact ego or primary-actor L0 spawning still fails after those retries, follow scenario_config.spawn_policy: relocate the entire scene to a valid ego spawn, preserve relative geometry by recomputing primary/background poses from the actual ego transform, enter the frame loop, save risk images, and record relocation metadata plus ego_spawn_deviation_m and primary_relative_error_m in event_trace.json. Do not raise RuntimeError only because the requested L0 absolute pose was not spawnable.
+If the failure mentions `wp.next()` receiving a negative distance, repair waypoint traversal: `Waypoint.next(distance)` only accepts non-negative distances. Use `waypoint.previous(abs(distance))` when available for backward travel, or compute a backward transform with the waypoint/ego forward vector instead of calling `next(-x)`.
 Fix the root cause, especially CARLA import/scope errors such as UnboundLocalError from referencing carla before import.
 If the failure mentions event_trace, implement or fix --output-dir/event_trace.json according to scenario_config.event_contract.
 If the failure mentions semantic validation, change the physical scene so the primary actor satisfies event_contract.numeric_acceptance; do not fake trace values.

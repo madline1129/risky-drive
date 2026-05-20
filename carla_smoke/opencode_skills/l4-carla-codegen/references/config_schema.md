@@ -12,7 +12,7 @@ Shared fields:
 - `scene_reconstruction`: compact L0 state used to rebuild the original scene context.
 - `source_l0_state_file`: original L0 state path when provided.
 - `reconstruction_policy`: requirements for preserving the L0 scene identity.
-- `spawn_policy`: fallback policy when exact L0 absolute poses are not spawnable after reloading CARLA.
+- `spawn_policy`: fallback policy when exact L0 absolute poses are not spawnable after reloading CARLA. Relative ego-to-actor geometry is more important than exact absolute coordinates.
 - `event_contract`: required per-chain event trace output. Treat this as a hard acceptance contract.
 - `carla_plan.actor_motion_plan`: explicit movement/behavior plan for all important actors after the L0 snapshot.
 - `l4_plan_agent`: optional LLM translation from the natural-language L3 chain into the executable plan and object constraints.
@@ -25,7 +25,7 @@ If `physical_task` or `risk_object_spec` conflicts with free-form text such as `
 Important `risk_object_spec` fields:
 
 - `risk_object_spec.primary_object`: the exact object that must be perturbed: front vehicle, payload, vulnerable actor, road obstacle, or existing side vehicle.
-- `risk_object_spec.primary_object.source == "l0_actor"` means reconstruct that same L0 actor id/type/pose as the primary risk object.
+- `risk_object_spec.primary_object.source == "l0_actor"` means preserve that L0 actor as the semantic primary risk object: configured id, type/kind, relative position to ego, and required action. In a fresh CARLA replay, the live CARLA actor id may differ and the absolute pose may be relocated if relative geometry is preserved.
 - `risk_object_spec.primary_object.source == "generated_actor"` means spawn a new object, but use the provided world coordinates when present.
 - `risk_object_spec.geometry`: precomputed world-space start/end/target locations for generated actors. Do not treat these as local coordinates again.
 - `risk_object_spec.action`: the required perturbation for the primary object only.
@@ -41,8 +41,8 @@ Important `object_registry` fields:
 Important `physical_task` fields:
 
 - `physical_task.primary_actor`: the actor that must drive the event.
-- `physical_task.primary_actor.source == "l0_actor"` means reuse that same L0 actor id/type/pose as the primary event actor. Do not replace it with a generic spawned obstacle.
-- After spawning an actor from `physical_task.primary_actor.initial_location`, verify the live actor location is close to that requested location. If it appears near world origin or an unrelated spawn point, destroy it and retry near the requested L0 pose or fail clearly.
+- `physical_task.primary_actor.source == "l0_actor"` means reuse that same L0 actor identity semantically: same configured id/type/kind, same relative role in the scene, and same primary action. Do not replace it with a generic spawned obstacle or a different scenario template.
+- After spawning an actor from `physical_task.primary_actor.initial_location`, verify the live actor location. If it appears near world origin or an unrelated spawn point, destroy it and retry near the requested L0 pose or near the recomputed ego-relative pose.
 - `physical_task.action`: required motion, trigger timing, and target geometry.
 - `physical_task.success_criteria`: numeric acceptance criteria. The generated physical scene must satisfy these.
 - `physical_task.trace_schema.top_level_frames_key`: per-frame trace data must be written under this key, normally `frames`.
@@ -58,10 +58,11 @@ When `scene_reconstruction` is present, use it before generic spawn points:
 
 Spawn policy:
 
-- Prefer the exact L0 ego and actor poses, with small z offsets and nearby waypoint projection.
-- If exact ego L0 spawning fails, `spawn_policy.relative_relocation_allowed` permits moving the entire L4 scene to a valid ego spawn/waypoint.
+- Prefer the exact L0 ego and actor poses when they spawn cleanly, with small z offsets and nearby waypoint/navmesh projection.
+- If exact ego or primary-actor L0 spawning fails, `spawn_policy.relative_relocation_allowed` permits moving the entire L4 scene to a valid ego spawn/waypoint.
 - When relocating, recompute the primary actor and relevant participants from the actual ego transform using their L0 relative longitudinal/lateral offsets. Do not keep the primary actor at the old absolute L0 world coordinate after relocating ego.
-- Record relocation metadata in `event_trace.json`: `scene_relocated`, `relocation_reason`, `requested_ego_location`, `actual_ego_location`, `requested_primary_location`, and `actual_primary_initial_location`.
+- It is acceptable for requested and actual absolute locations to differ when relative longitudinal/lateral offsets remain close enough for the visual risk event.
+- Record relocation metadata in `event_trace.json`: `scene_relocated`, `relocation_reason`, `requested_ego_location`, `actual_ego_location`, `requested_primary_location`, `actual_primary_initial_location`, `requested_primary_relative_to_ego`, `actual_primary_relative_to_ego`, and `primary_relative_error_m`.
 - Never accept `(0,0,0)` as a valid ego or primary actor spawn.
 
 Risk images:
