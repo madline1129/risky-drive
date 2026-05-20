@@ -397,6 +397,62 @@ def run_capture_if_requested(args, repo_root):
 
 
 def build_l4_command(args, repo_root, curated_l3_path):
+    if args.l4_backend == "code-agent":
+        runner = os.path.join(repo_root, "carla_smoke", "pipeline", "l4.py")
+        command = [
+            args.carla_python or sys.executable,
+            runner,
+            os.path.abspath(curated_l3_path),
+            "--output-dir",
+            os.path.abspath(args.output_dir),
+            "--l0-json",
+            os.path.abspath(args.l0_json),
+            "--carla-root",
+            args.carla_root,
+            "--host",
+            args.host,
+            "--port",
+            str(args.port),
+            "--town",
+            args.town,
+            "--frames",
+            str(args.l4_frames),
+            "--save-every",
+            str(args.l4_save_every),
+            "--local-trigger-frame",
+            str(args.trigger_frame),
+            "--pre-trigger-seconds",
+            str(args.pre_trigger_seconds),
+            "--source-timestep",
+            str(args.source_timestep),
+            "--code-agent",
+            args.code_agent,
+            "--opencode-bin",
+            args.opencode_bin,
+            "--opencode-model",
+            args.opencode_model,
+            "--opencode-repair-attempts",
+            str(args.opencode_repair_attempts),
+            "--plan-model",
+            args.plan_model,
+            "--plan-url",
+            args.plan_url,
+            "--api-key-env",
+            args.api_key_env,
+            "--plan-timeout",
+            str(args.timeout),
+            "--execute",
+            "--all-chains",
+            "--continue-on-chain-error",
+        ]
+        if args.skip_plan_agent:
+            command.append("--skip-plan-agent")
+        if args.env_file:
+            command.extend(["--env-file", args.env_file])
+        if args.validate_event_trace:
+            command.append("--validate-event-trace")
+        return command
+
     runner = os.path.join(repo_root, "carla_smoke", "pipeline", "run_l4_intervention_from_workdir.py")
     command = [
         args.carla_python or sys.executable,
@@ -442,7 +498,7 @@ def build_l4_command(args, repo_root, curated_l3_path):
         "--all-chains",
         "--continue-on-chain-error",
         "--intervention-agent",
-        args.intervention_agent,
+        args.code_agent,
         "--opencode-bin",
         args.opencode_bin,
         "--opencode-model",
@@ -500,7 +556,14 @@ def main():
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--ego-speed-difference", type=float, default=-5.0)
     parser.add_argument("--weather", default="ClearNoon")
-    parser.add_argument("--intervention-agent", choices=["opencode", "template"], default="opencode")
+    parser.add_argument(
+        "--l4-backend",
+        choices=["code-agent", "safebench-intervention"],
+        default="code-agent",
+        help="Default is code-agent because this curated script is intended to make OpenCode generate L4 risk scenes.",
+    )
+    parser.add_argument("--code-agent", choices=["opencode", "template"], default="opencode")
+    parser.add_argument("--town", default="Town05")
     parser.add_argument("--opencode-bin", default="opencode")
     parser.add_argument("--opencode-model", default="deepseek-v4-pro")
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
