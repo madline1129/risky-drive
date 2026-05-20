@@ -57,10 +57,10 @@ def main():
     parser.add_argument(
         "--l4-backend",
         choices=["safebench-intervention", "code-agent"],
-        default="safebench-intervention",
+        default="code-agent",
         help=(
-            "Default safebench-intervention replays the original SafeBench scene and perturbs live actors. "
-            "Use code-agent to keep the older generated-script fresh-world backend."
+            "Default code-agent builds a fresh CARLA scene with opencode/template. "
+            "Use safebench-intervention to replay the original SafeBench scene and perturb live actors in-place."
         ),
     )
     parser.add_argument("--local-trigger-frame", type=int, default=20)
