@@ -453,6 +453,76 @@ def build_l4_command(args, repo_root, curated_l3_path):
             command.append("--validate-event-trace")
         return command
 
+    if args.l4_backend == "scenario-language":
+        runner = os.path.join(repo_root, "carla_smoke", "pipeline", "l4_scenario_language.py")
+        command = [
+            args.carla_python or sys.executable,
+            runner,
+            os.path.abspath(curated_l3_path),
+            "--output-dir",
+            os.path.abspath(args.output_dir),
+            "--l0-json",
+            os.path.abspath(args.l0_json),
+            "--carla-root",
+            args.carla_root,
+            "--carla-python",
+            args.carla_python or sys.executable,
+            "--host",
+            args.host,
+            "--port",
+            str(args.port),
+            "--timeout",
+            str(args.timeout),
+            "--scene-sample-attempts",
+            str(args.scene_sample_attempts),
+            "--frames",
+            str(args.l4_frames),
+            "--save-every",
+            str(args.l4_save_every),
+            "--local-trigger-frame",
+            str(args.trigger_frame),
+            "--pre-trigger-seconds",
+            str(args.pre_trigger_seconds),
+            "--source-timestep",
+            str(args.source_timestep),
+            "--warmup-ticks",
+            str(args.warmup_ticks),
+            "--seed",
+            str(args.seed),
+            "--timestep",
+            str(args.source_timestep),
+            "--ego-speed-difference",
+            str(args.ego_speed_difference),
+            "--weather",
+            args.weather,
+            "--code-agent",
+            "opencode",
+            "--opencode-bin",
+            args.opencode_bin,
+            "--opencode-model",
+            args.opencode_model,
+            "--opencode-repair-attempts",
+            str(args.opencode_repair_attempts),
+            "--plan-model",
+            args.plan_model,
+            "--plan-url",
+            args.plan_url,
+            "--api-key-env",
+            args.api_key_env,
+            "--plan-timeout",
+            str(args.timeout),
+            "--execute",
+            "--all-chains",
+            "--continue-on-chain-error",
+        ]
+        if args.skip_plan_agent:
+            command.append("--skip-plan-agent")
+        if args.env_file:
+            command.extend(["--env-file", args.env_file])
+        if args.validate_event_trace:
+            command.append("--validate-event-trace")
+        return command
+
     runner = os.path.join(repo_root, "carla_smoke", "pipeline", "run_l4_intervention_from_workdir.py")
     command = [
         args.carla_python or sys.executable,
@@ -558,7 +628,7 @@ def main():
     parser.add_argument("--weather", default="ClearNoon")
     parser.add_argument(
         "--l4-backend",
-        choices=["code-agent", "safebench-intervention"],
+        choices=["code-agent", "scenario-language", "safebench-intervention"],
         default="code-agent",
         help="Default is code-agent because this curated script is intended to make OpenCode generate L4 risk scenes.",
     )

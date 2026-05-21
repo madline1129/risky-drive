@@ -116,11 +116,12 @@ def main():
     parser.add_argument("--l4-pre-trigger-seconds", type=float, default=2.0)
     parser.add_argument(
         "--l4-backend",
-        choices=["safebench-intervention", "code-agent"],
+        choices=["safebench-intervention", "code-agent", "scenario-language"],
         default="code-agent",
         help=(
             "L4 execution backend. safebench-intervention replays the original SafeBench scene and perturbs "
-            "live actors in-place; code-agent builds a fresh CARLA scene with opencode/template."
+            "live actors in-place; code-agent builds a fresh CARLA Python scene; scenario-language uses "
+            "semantic primitives plus opencode to generate Scenic."
         ),
     )
     parser.add_argument("--validate-event-trace", action="store_true")
@@ -148,6 +149,7 @@ def main():
     l2_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l2.py")
     l3_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l3.py")
     l4_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l4.py")
+    l4_scenario_language_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l4_scenario_language.py")
     l4_intervention_script = os.path.join(repo_root, "carla_smoke", "pipeline", "run_l4_intervention_from_workdir.py")
 
     os.makedirs(run_dir, exist_ok=True)
@@ -368,7 +370,7 @@ def main():
                             l4_command.extend(["--chain-index", str(args.l4_chain_index)])
                         if not args.validate_event_trace:
                             l4_command.append("--skip-event-trace-validation")
-                    else:
+                    elif args.l4_backend == "code-agent":
                         l4_town = derive_l4_town(args.town, os.path.join(l0_dir, "state.json"))
                         l4_command = [
                             carla_python,
@@ -398,6 +400,77 @@ def main():
                             str(args.timestep),
                             "--code-agent",
                             args.code_agent,
+                            "--opencode-bin",
+                            args.opencode_bin,
+                            "--opencode-model",
+                            args.opencode_model,
+                            "--opencode-repair-attempts",
+                            str(args.opencode_repair_attempts),
+                            "--plan-model",
+                            args.model,
+                            "--plan-url",
+                            args.deepseek_url,
+                            "--api-key-env",
+                            args.api_key_env,
+                            "--plan-timeout",
+                            str(args.timeout),
+                            "--execute",
+                        ]
+                        if args.skip_plan_agent:
+                            l4_command.append("--skip-plan-agent")
+                        if args.env_file:
+                            l4_command.extend(["--env-file", args.env_file])
+                        if args.l4_all_chains:
+                            l4_command.append("--all-chains")
+                            if args.continue_on_chain_error:
+                                l4_command.append("--continue-on-chain-error")
+                        else:
+                            l4_command.extend(["--chain-index", str(args.l4_chain_index)])
+                        if args.validate_event_trace:
+                            l4_command.append("--validate-event-trace")
+                    else:
+                        l4_command = [
+                            carla_python,
+                            l4_scenario_language_script,
+                            os.path.join(l3_dir, "chains.json"),
+                            "--output-dir",
+                            l4_dir,
+                            "--l0-json",
+                            os.path.join(l0_dir, "state.json"),
+                            "--carla-root",
+                            args.carla_root,
+                            "--carla-python",
+                            carla_python,
+                            "--host",
+                            args.host,
+                            "--port",
+                            str(args.port),
+                            "--timeout",
+                            str(args.timeout),
+                            "--scene-sample-attempts",
+                            str(args.scene_sample_attempts),
+                            "--frames",
+                            str(args.l4_frames),
+                            "--save-every",
+                            str(args.l4_save_every),
+                            "--local-trigger-frame",
+                            str(args.l4_local_trigger_frame),
+                            "--pre-trigger-seconds",
+                            str(args.l4_pre_trigger_seconds),
+                            "--source-timestep",
+                            str(args.timestep),
+                            "--warmup-ticks",
+                            str(args.warmup_ticks),
+                            "--seed",
+                            str(args.seed),
+                            "--timestep",
+                            str(args.timestep),
+                            "--ego-speed-difference",
+                            str(args.ego_speed_difference),
+                            "--weather",
+                            args.weather,
+                            "--code-agent",
+                            "opencode",
                             "--opencode-bin",
                             args.opencode_bin,
                             "--opencode-model",
