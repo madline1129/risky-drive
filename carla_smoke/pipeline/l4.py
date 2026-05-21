@@ -141,6 +141,54 @@ def chain_output_dir(base_output_dir, chain, index, all_chains):
     return os.path.join(base_output_dir, f"{index:02d}_{safe_id}")
 
 
+def as_float(value, default=None):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def actor_kind(actor):
+    kind = str((actor or {}).get("kind", "")).lower()
+    type_id = str((actor or {}).get("type_id", "")).lower()
+    if kind:
+        return kind
+    if type_id.startswith("vehicle."):
+        return "vehicle"
+    if type_id.startswith("walker."):
+        return "pedestrian"
+    return type_id
+
+
+def infer_nearest_front_actor(actors):
+    def actor_score(actor):
+        for key in ("relative_longitudinal_m", "distance_m"):
+            value = as_float(actor.get(key))
+            if value is not None:
+                return abs(value)
+        return float("inf")
+
+    front = []
+    for actor in actors if isinstance(actors, list) else []:
+        if not isinstance(actor, dict):
+            continue
+        kind = actor_kind(actor)
+        type_id = str(actor.get("type_id", "")).lower()
+        if kind != "vehicle" and not type_id.startswith("vehicle."):
+            continue
+        rel_long = as_float(actor.get("relative_longitudinal_m"))
+        rel_lat = as_float(actor.get("relative_lateral_m"))
+        rel_pos = str(actor.get("relative_position", "")).lower()
+        if rel_long is not None and rel_long < -1.0:
+            continue
+        if rel_lat is not None and abs(rel_lat) > 4.0 and "front" not in rel_pos:
+            continue
+        front.append(actor)
+    return min(front, key=actor_score) if front else None
+
+
 def compact_l0_scene(l0_state):
     if not isinstance(l0_state, dict):
         return None
@@ -149,7 +197,9 @@ def compact_l0_scene(l0_state):
     ego = l0_state.get("ego", {})
     actors = l0_state.get("actors", [])
     nearest_front = l0_state.get("nearest_front_actor")
-    source_map = source.get("map") or road.get("map")
+    if not isinstance(nearest_front, dict):
+        nearest_front = infer_nearest_front_actor(actors)
+    source_map = source.get("source_map") or source.get("map") or road.get("map")
     preferred_town = os.path.basename(str(source_map)) if source_map else None
     return {
         "source_frame": source.get("frame"),
@@ -226,6 +276,20 @@ def select_reconstruction_state(l0_state, pre_trigger_seconds=2.0, source_timest
         }
 
     states = sorted(states, key=lambda state: frame_from_state(state) if frame_from_state(state) is not None else 10**12)
+    if len(states) == 1:
+        selected = states[0]
+        selected_frame = frame_from_state(selected)
+        peak_distance = actor_min_distance(selected)
+        return selected, {
+            "selection_reason": "single_l0_frame",
+            "risk_peak_frame": selected_frame,
+            "risk_peak_distance_m": None if peak_distance == float("inf") else round(peak_distance, 3),
+            "target_pre_event_frame": selected_frame,
+            "reconstruction_frame": selected_frame,
+            "available_timeline_frames": [selected_frame] if selected_frame is not None else [],
+            "pre_trigger_seconds": pre_trigger_seconds,
+            "source_timestep": source_timestep,
+        }
     peak_state = min(states, key=actor_min_distance)
     peak_frame = frame_from_state(peak_state)
     peak_distance = actor_min_distance(peak_state)

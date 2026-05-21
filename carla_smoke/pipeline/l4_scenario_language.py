@@ -547,7 +547,8 @@ Repair the Scenic file in place.
 - Keep `param map = localPath(...)` on the absolute map path from semantic_primitives.json.
 - Replace any `Point(x, y, z)` / CARLA Python coordinate syntax with Scenic 2D `x @ y` syntax.
 - Do not flip actor.relative_to_ego.side. If a left-side actor does not fit, search only left-side distances; if a right-side actor does not fit, search only right-side distances.
-- If this is a semantic validation failure, fix the Scenic scenario so event_trace preserves the expected relative side/longitudinal/lateral geometry and risk action.
+- If this is a semantic validation failure, use the Semantic validation report below as the repair target. Each failed check includes target, actual, and reason; edit the Scenic scenario so those checks pass.
+- Do not satisfy semantic validation by changing scenario_config.json, semantic_primitives.json, event_trace.json, actor type, or scenario_type. Fix only generated_risk_scene.scenic.
 - If a parameter used in range(...) can be float, cast it to int(...) or replace it with a fixed integer.
 - Do not switch to Python code.
 - Do not write Markdown. Edit only generated_risk_scene.scenic.
@@ -1121,8 +1122,8 @@ def run_scenic_with_repair(args, config_path, primitives_path, scenic_file, imag
 
 
 def run_scenic_validate_with_repair(args, config_path, primitives_path, scenic_file, images_dir, config, primitives):
-    last_error = ""
     for attempt in range(args.opencode_repair_attempts + 1):
+        trace = None
         try:
             run_scenic_capture(args, scenic_file, images_dir)
             postprocess_images(images_dir)
@@ -1135,6 +1136,13 @@ def run_scenic_validate_with_repair(args, config_path, primitives_path, scenic_f
             return trace
         except (subprocess.CalledProcessError, RuntimeError) as exc:
             last_error = error_text(exc)
+            if isinstance(trace, dict) and trace.get("semantic_validation"):
+                last_error += (
+                    "\n\nSemantic validation report with target/actual/pass fields:\n"
+                    + json.dumps(trace["semantic_validation"], ensure_ascii=False, indent=2)
+                    + "\n\nExpected primary actor:\n"
+                    + json.dumps(trace.get("expected_primary_actor", {}), ensure_ascii=False, indent=2)
+                )
             if attempt >= args.opencode_repair_attempts:
                 raise
             print(f"\nAsking opencode to repair Scenic file ({attempt + 1}/{args.opencode_repair_attempts}).")

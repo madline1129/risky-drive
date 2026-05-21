@@ -42,7 +42,8 @@ def derive_l4_town(explicit_town, l0_json_path):
     if explicit_town:
         return explicit_town
     l0_state = read_json_if_exists(l0_json_path) or {}
-    source_map = (l0_state.get("source") or {}).get("map") or (l0_state.get("road") or {}).get("map")
+    source = l0_state.get("source") or {}
+    source_map = source.get("source_map") or source.get("map") or (l0_state.get("road") or {}).get("map")
     if source_map:
         return os.path.basename(str(source_map))
     return "Town03"
@@ -92,7 +93,10 @@ def main():
     parser.add_argument("--workdir-root", default=default_workdir_root)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--select", choices=["first", "middle", "last"], default="middle")
-    parser.add_argument("--sample-count", type=int, default=5, help="Number of saved frames sampled for multi-frame vision and L1 inference.")
+    parser.add_argument("--sample-count", type=int, default=1, help="Number of saved frames sampled for vision and L1 inference.")
+    parser.set_defaults(single_random_frame=True)
+    parser.add_argument("--single-random-frame", dest="single_random_frame", action="store_true", help="Capture exactly one random source frame from the SafeBench scene.")
+    parser.add_argument("--sequence-capture", dest="single_random_frame", action="store_false", help="Capture the old saved-frame sequence instead of a single random frame.")
     parser.add_argument("--scenario-hint", default="")
     parser.add_argument("--model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--deepseek-url", default=DEFAULT_DEEPSEEK_URL)
@@ -191,9 +195,11 @@ def main():
             "--output-dir",
             image_dir,
         ]
+        if args.single_random_frame:
+            scene_command.append("--single-random-frame")
         if args.scenic_file:
             scene_command.extend(["--scenic-file", args.scenic_file])
-        if args.clean_images:
+        if args.clean_images or args.single_random_frame:
             scene_command.append("--clean-output")
         run_command(scene_command)
 
@@ -526,6 +532,7 @@ def main():
             "save_every": args.save_every,
             "camera_mode": args.camera_mode,
             "sample_count": args.sample_count,
+            "single_random_frame": args.single_random_frame,
             "seed": args.seed,
             "timestep": args.timestep,
             "weather": args.weather,

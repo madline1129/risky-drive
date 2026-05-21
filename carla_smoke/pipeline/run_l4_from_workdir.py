@@ -23,7 +23,8 @@ def derive_town(run_dir, explicit_town):
     if explicit_town:
         return explicit_town
     l0_state = read_json_if_exists(os.path.join(run_dir, "l0", "state.json")) or {}
-    source_map = (l0_state.get("source") or {}).get("map") or (l0_state.get("road") or {}).get("map")
+    source = l0_state.get("source") or {}
+    source_map = source.get("source_map") or source.get("map") or (l0_state.get("road") or {}).get("map")
     if source_map:
         return os.path.basename(str(source_map))
     return "Town05"

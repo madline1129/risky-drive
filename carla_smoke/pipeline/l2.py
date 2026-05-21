@@ -10,7 +10,7 @@ from deepseek_client import DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DeepSe
 
 
 PROMPT_TEMPLATE = """你是自动驾驶风险推演系统中的 L2 子智能体。
-你的输入不是图像，而是上一步 L1 生成的风险薄弱环节 JSON，可能还包含 L0 场景快照。
+你的输入不是图像，而是上一步 L1 生成的风险薄弱环节 JSON，可能还包含精简的单帧 L0 场景快照。
 
 任务：
 L2 触发事件假设：
@@ -18,6 +18,8 @@ L2 触发事件假设：
 - 这些触发事件是“反事实干预”：如果这个事件发生，当前风险薄弱点会被激活，并进入后续事故链。
 - L2 只描述具体触发事件，不展开事故链，不写 CARLA 执行方案，不指定掉落物/轨迹/脚本参数；这些属于 L3/L4。
 - 如果 L1 已经给出 actor_list / selected_actor / primary_perturbation_object，必须原样继承；source="l0_actor" 的对象不能改写成 generated_actor。
+- L0 是单帧输入，不能声称有多帧趋势；如果触发事件需要后续确认，observability 写“需要仿真状态确认”。
+- 不要重新选择主风险对象；L2 只负责给 L1 的薄弱点补一个可执行/可近似执行的初始触发。
 - 平均每个 L1 给出 2 个触发事件。
 - 如果 L1 有 5 个风险，则总共输出 10 个 L2 触发事件。
 
@@ -45,7 +47,7 @@ L2 触发事件假设：
       "actor_list": [],
       "selected_actor": {},
       "primary_perturbation_object": {},
-      "observability": "可由图像确认/需要多帧确认/需要仿真状态确认/纯假设",
+      "observability": "可由图像确认/需要仿真状态确认/纯假设",
       "plausibility": "低/中/高",
       "boundary": "L2只定义触发事件，L3再展开物理演化"
     }
@@ -59,6 +61,7 @@ L2 触发事件假设：
 - L1 选中的原始 L0 actor 必须继续作为本触发事件的 selected_actor；只有 L1 明确没有原始对象时，后续才允许新增 generated_actor。
 - 触发事件必须具体、可在 CARLA 或规则脚本中实现/近似实现。
 - 触发事件只到“初始触发”，不要直接跳到 L3/L4 的事故链、对象轨迹、二次事故或代码参数。
+- 不要把单帧风险写成“持续靠近/跨帧出现/速度逐渐变化”这类多帧事实。
 """
 
 

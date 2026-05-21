@@ -46,7 +46,10 @@ def main():
     parser.add_argument("--scene-sample-attempts", type=int, default=20)
     parser.add_argument("--frames", type=int, default=600, help="Scene capture ticks. 600 * 0.05s = 30s by default.")
     parser.add_argument("--save-every", type=int, default=20, help="Capture one scene image every N ticks. 20 * 0.05s = 1s by default.")
-    parser.add_argument("--sample-count", type=int, default=5, help="Number of sampled montage frames for Qwen/L1.")
+    parser.add_argument("--sample-count", type=int, default=1, help="Number of sampled montage frames for Qwen/L1.")
+    parser.set_defaults(single_random_frame=True)
+    parser.add_argument("--single-random-frame", dest="single_random_frame", action="store_true", help="Capture exactly one random source frame from the SafeBench scene.")
+    parser.add_argument("--sequence-capture", dest="single_random_frame", action="store_false", help="Capture the old saved-frame sequence instead of a single random frame.")
     parser.add_argument("--camera-mode", choices=["front", "surround"], default="surround")
     parser.add_argument("--timestep", type=float, default=0.05)
     parser.add_argument("--warmup-ticks", type=int, default=5)
@@ -144,6 +147,8 @@ def main():
         args.l4_backend,
         "--l4-all-chains",
     ]
+    if args.single_random_frame:
+        command.append("--single-random-frame")
     if args.skip_plan_agent:
         command.append("--skip-plan-agent")
     if args.carla_python:

@@ -24,16 +24,18 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 PROMPT_TEMPLATE = """你是自动驾驶风险推演系统中的 L1 子智能体。
 
 输入包括：
-1. CARLA API 已经导出的 L0 场景结构化快照；多帧模式下还会提供 sampled_l0_states。L0 是几何/物理事实来源。
+1. CARLA API 已经导出的单帧 L0 场景结构化快照。L0 是几何/物理事实来源。
 2. 可选的 Qwen 本地视觉观测 JSON。Qwen 负责看图，你不能声称自己直接看过图像，只能引用 Qwen 的视觉结论。
 
 任务：
-- 结合 L0 中的自车速度、附近 actor、相对距离、相对方位、车道、路口、天气、最近前方目标，以及 Qwen 视觉观测，推断 5 个最可能的 L1 物理风险薄弱环节。
-- 如果 sampled_l0_states 存在，必须综合多帧变化，优先关注跨帧中新出现、靠近、横穿、从侧后方进入、由遮挡区域出现的 actor，而不是只看单帧最近目标。
+- 结合 L0 中的 ego、weather、actors、source，以及 Qwen 视觉观测，推断 5 个最可能的 L1 物理风险薄弱环节。
+- L0 是单帧输入，不能声称有“持续靠近、跨帧出现、速度变化趋势”等多帧证据；只能说“当前单帧状态显示”。
+- 如果需要最近前车、侧车、弱势交通参与者，必须从 actors 中根据 relative_position、relative_longitudinal_m、relative_lateral_m、distance_m、kind/type_id 自己判断。
 - L1 只描述当前场景中的“物理风险薄弱环节”：哪里脆弱、为什么脆弱、证据是什么。
 - L1 不生成具体触发事件，不写“突然急刹/绳索断裂/行人闯入”等事件；这些属于 L2。
 - 候选包括但不限于：货物固定不稳、卡车刹车灯可见性不足、骑行者靠近机动车道、道路湿滑、自车A柱盲区、前方大型车辆遮挡视野、跟车距离不足、车道空间不足或避让空间受限、前车速度状态不确定。
 - 如果 CARLA API 和 Qwen 视觉观测不一致，优先相信 CARLA API 的距离/速度/actor 真值，同时在 evidence 中标注 vision gap。
+- evidence 必须引用精简 L0 字段，例如 ego.speed_mps、weather.*、actors[i].relative_*、actors[i].type_id、source.frame。
 
 请只输出一个 JSON 对象，不要 Markdown，不要解释性前后缀。格式必须是：
 {
@@ -238,17 +240,85 @@ def actor_min_distance(state):
     return min(numeric) if numeric else float("inf")
 
 
+def source_for_reconstruction(state, selected_image_path=None, selected_images=None, vision_json=None):
+    source = dict(state.get("source", {}) if isinstance(state, dict) else {})
+    road = state.get("road", {}) if isinstance(state, dict) and isinstance(state.get("road"), dict) else {}
+    keep = {
+        "frame",
+        "image_file",
+        "scenario_source",
+        "safebench_scenic_file",
+        "safebench_scenario_index",
+        "scenario_description",
+        "camera_mode",
+        "camera_images",
+        "montage_layout",
+        "map",
+        "source_map",
+    }
+    compact = {key: source.get(key) for key in keep if source.get(key) is not None}
+    source_map = compact.get("source_map") or compact.get("map") or road.get("map")
+    if source_map is not None:
+        compact["source_map"] = source_map
+        compact.setdefault("map", source_map)
+    if selected_image_path:
+        compact["selected_image_path"] = os.path.abspath(selected_image_path)
+    if vision_json:
+        compact["vision_observation_file"] = os.path.abspath(vision_json)
+    return compact
+
+
+def compact_l0_state(state, selected_image_path=None, selected_images=None, vision_json=None):
+    if not isinstance(state, dict):
+        state = {}
+    return {
+        "level": "L0",
+        "ego": state.get("ego", {}),
+        "weather": state.get("weather", {}),
+        "actors": state.get("actors", []) if isinstance(state.get("actors"), list) else [],
+        "source": source_for_reconstruction(state, selected_image_path, selected_images, vision_json),
+    }
+
+
+def is_vehicle(actor):
+    kind = actor_kind(actor)
+    type_id = str((actor or {}).get("type_id", "")).lower()
+    return kind == "vehicle" or type_id.startswith("vehicle.")
+
+
+def is_vulnerable_actor(actor):
+    kind = actor_kind(actor)
+    type_id = str((actor or {}).get("type_id", "")).lower()
+    return kind in {"pedestrian", "walker", "cyclist", "bicycle"} or type_id.startswith("walker.")
+
+
+def nearest_front_vehicle(l0_state):
+    actors = l0_state.get("actors", []) if isinstance(l0_state, dict) and isinstance(l0_state.get("actors"), list) else []
+    front = []
+    for actor in actors:
+        if not isinstance(actor, dict) or not is_vehicle(actor):
+            continue
+        rel_pos = str(actor.get("relative_position", "")).lower()
+        rel_long = safe_float(actor.get("relative_longitudinal_m"), None)
+        rel_lat = safe_float(actor.get("relative_lateral_m"), None)
+        if rel_long is not None and rel_long < -1.0:
+            continue
+        if rel_lat is not None and abs(rel_lat) > 4.0 and "front" not in rel_pos:
+            continue
+        if rel_pos and "front" not in rel_pos and rel_long is None:
+            continue
+        front.append(actor)
+    return min(front, key=actor_distance_score) if front else None
+
+
 def compact_sampled_state(state):
     if not isinstance(state, dict):
         return {}
     return {
         "source": state.get("source", {}),
         "ego": state.get("ego", {}),
-        "road": state.get("road", {}),
         "weather": state.get("weather", {}),
         "actors": state.get("actors", []),
-        "nearest_front_actor": state.get("nearest_front_actor"),
-        "summary": state.get("summary", {}),
     }
 
 
@@ -260,13 +330,6 @@ def load_l0_sequence(image_paths, state_json, ego_log, all_image_paths=None):
     representative = min(states, key=actor_min_distance) if states else fallback_state_from_ego_log(image_paths[0], ego_log)
     representative = dict(representative)
     representative.setdefault("source", {})
-    representative["source"]["sampled_image_paths"] = [os.path.abspath(path) for path in image_paths]
-    representative["source"]["sampled_frames"] = [frame_from_image_name(path) for path in image_paths]
-    representative["source"]["sampled_state_count"] = len(states)
-    representative["sampled_l0_states"] = [compact_sampled_state(state) for state in states]
-    timeline_paths = all_image_paths or image_paths
-    timeline_states = [load_l0_state(image_path, None, ego_log) for image_path in timeline_paths]
-    representative["l4_timeline_states"] = [compact_sampled_state(state) for state in timeline_states]
     return representative, states
 
 
@@ -281,7 +344,7 @@ def build_prompt(l0_state, vision_observation, scenario_hint):
 
 def fallback_risks_from_state(l0_state):
     ego_speed = float(l0_state.get("ego", {}).get("speed_kmh", 0.0) or 0.0)
-    nearest_front = l0_state.get("nearest_front_actor")
+    nearest_front = nearest_front_vehicle(l0_state)
     weather = l0_state.get("weather", {})
     actors = l0_state.get("actors", [])
 
@@ -297,7 +360,7 @@ def fallback_risks_from_state(l0_state):
                 "risk_type": "物理风险推测",
                 "visibility": "由CARLA状态支持",
                 "risk_level": level,
-                "evidence": f"ego.speed_kmh={ego_speed}; nearest_front_actor.distance_m={distance}",
+                "evidence": f"ego.speed_kmh={ego_speed}; selected front actor distance_m={distance}",
                 "weakness_reason": "自车与前方目标距离较近时，制动和避让余量下降。",
                 "boundary": "L1只识别薄弱环节，不生成触发事件",
             }
@@ -310,7 +373,7 @@ def fallback_risks_from_state(l0_state):
                 "risk_type": "物理风险推测",
                 "visibility": "由CARLA状态支持",
                 "risk_level": "中",
-                "evidence": f"nearest_front_actor.type_id={nearest_front.get('type_id')}; relative_position={nearest_front.get('relative_position')}",
+                "evidence": f"front actor type_id={nearest_front.get('type_id')}; relative_position={nearest_front.get('relative_position')}",
                 "weakness_reason": "前方车辆处于自车前向区域，会压缩对更远处目标的观察空间。",
                 "boundary": "L1只识别薄弱环节，不生成触发事件",
             }
@@ -331,7 +394,7 @@ def fallback_risks_from_state(l0_state):
             }
         )
 
-    if any(actor.get("kind") == "pedestrian" for actor in actors):
+    if any(is_vulnerable_actor(actor) for actor in actors if isinstance(actor, dict)):
         risks.append(
             {
                 "level": "L1",
@@ -388,11 +451,6 @@ def l0_actor_candidates(l0_state):
             continue
         seen.add(key)
         candidates.append(actor)
-    nearest = l0_state.get("nearest_front_actor")
-    if isinstance(nearest, dict):
-        key = nearest.get("id", nearest.get("actor_id"))
-        if key not in seen:
-            candidates.append(nearest)
     return candidates
 
 
@@ -474,7 +532,7 @@ def select_l0_actor_for_risk(risk, l0_state):
         return min(vulnerable, key=actor_distance_score) if vulnerable else None
 
     if any(keyword in text for keyword in front_vehicle_keywords):
-        nearest = l0_state.get("nearest_front_actor") if isinstance(l0_state, dict) else None
+        nearest = nearest_front_vehicle(l0_state) if isinstance(l0_state, dict) else None
         if isinstance(nearest, dict) and is_vehicle(nearest):
             return nearest
         vehicles = [actor for actor in actors if is_vehicle(actor)]
@@ -570,18 +628,20 @@ def main():
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    l0_state, _ = load_l0_sequence(selected_images, args.state_json, args.ego_log, image_paths)
-    l0_state.setdefault("source", {})
-    representative_frame = l0_state.get("source", {}).get("frame")
+    raw_l0_state, _ = load_l0_sequence(selected_images, args.state_json, args.ego_log, image_paths)
+    raw_l0_state.setdefault("source", {})
+    representative_frame = raw_l0_state.get("source", {}).get("frame")
     image_path = next(
         (path for path in selected_images if frame_from_image_name(path) == representative_frame),
         selected_images[0],
     )
-    l0_state["source"]["selected_image_path"] = os.path.abspath(image_path)
-    l0_state["source"]["selected_image_paths"] = [os.path.abspath(path) for path in selected_images]
     vision_observation = read_json(args.vision_json) if args.vision_json and os.path.exists(args.vision_json) else None
-    if vision_observation:
-        l0_state["source"]["vision_observation_file"] = os.path.abspath(args.vision_json)
+    l0_state = compact_l0_state(
+        raw_l0_state,
+        selected_image_path=image_path,
+        selected_images=selected_images,
+        vision_json=args.vision_json if vision_observation else None,
+    )
     prompt = build_prompt(l0_state, vision_observation, args.scenario_hint)
 
     print(f"L0 state source: {l0_state.get('source', {}).get('sensor', 'unknown')}")

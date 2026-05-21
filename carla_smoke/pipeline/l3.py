@@ -10,7 +10,7 @@ from deepseek_client import DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DeepSe
 
 
 PROMPT_TEMPLATE = """你是自动驾驶风险推演系统中的 L3 子智能体。
-输入是 L2 触发事件假设 JSON，以及可选的 L0 场景快照。
+输入是 L2 触发事件假设 JSON，以及可选的精简单帧 L0 场景快照。
 
 任务：
 L3 初始事故链：
@@ -21,6 +21,7 @@ L3 初始事故链：
 - 如果上游对象 source="l0_actor"，必须保留 actor_id、type_id、location、rotation、relative_longitudinal_m、relative_lateral_m 等原始字段；不能改成 generated_object。
 - 对于事故链涉及多个物体的情况，用 chain_participants 列清楚：谁是主扰动物体，谁是 ego，谁只是背景/遮挡/受影响对象。
 - 背景对象必须标注 must_not_drive_primary_event=true，避免后续 L4/code agent 把背景对象当成主风险。
+- L0 是单帧输入，不要把事故链写成已经观测到的多帧趋势；只能基于当前单帧距离、相对方位、速度、天气解释触发后的第一段物理演化。
 
 例子：
 - L2: 绳索断裂
@@ -63,6 +64,7 @@ L3 初始事故链：
 - 不要输出 carla_plan；L4 会单独把自然语言事故链翻译成 CARLA plan。
 - 不要为了“可视化明显”引入无关物体，例如非货物链条不要加入 metal_pipe。
 - chain_participants 必须区分 primary_actor 和 background/occluder/affected_actor。
+- 单帧 L0 中不存在的对象只能在上游已经明确为 generated_object/generated_actor 时出现。
 """
 
 

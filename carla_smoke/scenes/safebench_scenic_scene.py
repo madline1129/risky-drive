@@ -437,6 +437,11 @@ def capture_one_safebench_scene(
                 while not image_queue.empty():
                     image_queue.get_nowait()
 
+        target_frame = None
+        if args.single_random_frame:
+            target_frame = random.SystemRandom().randrange(max(1, int(args.frames)))
+            print(f"single_random_frame target_frame={target_frame:04d}")
+
         saved = 0
         for frame_idx in range(args.frames):
             try:
@@ -465,7 +470,8 @@ def capture_one_safebench_scene(
                 ]
             )
 
-            if frame_idx % args.save_every == 0:
+            should_save = frame_idx == target_frame if target_frame is not None else frame_idx % args.save_every == 0
+            if should_save:
                 per_camera_files = None
                 if camera_queues is not None:
                     image_file, per_camera_files = save_surround_images_and_montage(surround_images, args.output_dir, frame_idx)
@@ -489,6 +495,8 @@ def capture_one_safebench_scene(
                 state_snapshots.append(snapshot)
                 write_json(os.path.join(args.output_dir, f"state_{frame_idx:04d}.json"), snapshot)
                 saved += 1
+                if target_frame is not None:
+                    break
 
             if frame_idx % 20 == 0:
                 print(f"frame={frame_idx:04d} ego_speed={speed:.2f} m/s saved={saved}")
@@ -505,6 +513,8 @@ def capture_one_safebench_scene(
                 "frames": args.frames,
                 "save_every": args.save_every,
                 "saved_images": saved,
+                "capture_mode": "single_random_frame" if target_frame is not None else "sampled_sequence",
+                "selected_frame": target_frame,
                 "camera_mode": args.camera_mode,
                 "camera_layout": "2x3_surround" if args.camera_mode == "surround" else "front",
                 "params": params,
@@ -621,6 +631,7 @@ def main():
     parser.add_argument("--fov", type=float, default=90.0)
     parser.add_argument("--camera-mode", choices=["front", "surround"], default="surround")
     parser.add_argument("--state-radius", type=float, default=80.0)
+    parser.add_argument("--single-random-frame", action="store_true", help="Save exactly one randomly selected source frame.")
     parser.add_argument("--clean-output", action="store_true")
     parser.set_defaults(try_next_on_failure=True)
     parser.add_argument(
