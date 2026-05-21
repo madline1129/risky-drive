@@ -93,20 +93,16 @@ def main():
     parser.add_argument("--workdir-root", default=default_workdir_root)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--select", choices=["first", "middle", "last"], default="middle")
-    parser.add_argument("--sample-count", type=int, default=1, help="Number of saved frames sampled for vision and L1 inference.")
+    parser.add_argument("--sample-count", type=int, default=1, help="Number of saved frames sampled for L1 inference.")
     parser.set_defaults(single_random_frame=True)
     parser.add_argument("--single-random-frame", dest="single_random_frame", action="store_true", help="Capture exactly one random source frame from the SafeBench scene.")
     parser.add_argument("--sequence-capture", dest="single_random_frame", action="store_false", help="Capture the old saved-frame sequence instead of a single random frame.")
     parser.add_argument("--scenario-hint", default="")
     parser.add_argument("--model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--deepseek-url", default=DEFAULT_DEEPSEEK_URL)
-    parser.add_argument("--qwen-model", default="qwen3.5:0.8b")
-    parser.add_argument("--ollama-url", default="http://127.0.0.1:11434/api/chat")
-    parser.add_argument("--vision-timeout", type=float, default=300.0)
     parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--skip-scene", action="store_true", help="Reuse an existing images directory in this run folder.")
-    parser.add_argument("--skip-vision", action="store_true")
     parser.add_argument("--skip-agents", action="store_true", help="Only capture the SafeBench-derived CARLA scene.")
     parser.add_argument("--skip-l2", action="store_true")
     parser.add_argument("--skip-l3", action="store_true")
@@ -118,22 +114,10 @@ def main():
     parser.add_argument("--l4-save-every", type=int, default=5)
     parser.add_argument("--l4-local-trigger-frame", type=int, default=20)
     parser.add_argument("--l4-pre-trigger-seconds", type=float, default=2.0)
-    parser.add_argument(
-        "--l4-backend",
-        choices=["safebench-intervention", "code-agent", "scenario-language"],
-        default="scenario-language",
-        help=(
-            "L4 execution backend. safebench-intervention replays the original SafeBench scene and perturbs "
-            "live actors in-place; code-agent builds a fresh CARLA Python scene; scenario-language uses "
-            "semantic primitives plus opencode to generate Scenic."
-        ),
-    )
     parser.add_argument("--validate-event-trace", action="store_true")
-    parser.add_argument("--code-agent", choices=["template", "opencode"], default="opencode")
     parser.add_argument("--opencode-bin", default="opencode")
     parser.add_argument("--opencode-model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
-    parser.add_argument("--skip-plan-agent", action="store_true", help="Skip the L4 PlanAgent and use L3 carla_plan/fallback rules.")
     parser.add_argument("--clean-images", action="store_true")
     args = parser.parse_args()
 
@@ -141,20 +125,16 @@ def main():
     carla_python = args.carla_python or sys.executable
     run_dir = os.path.abspath(os.path.join(args.workdir_root, run_id))
     image_dir = os.path.join(run_dir, "images")
-    vision_dir = os.path.join(run_dir, "vision")
     l0_dir = os.path.join(run_dir, "l0")
     l2_dir = os.path.join(run_dir, "l2")
     l3_dir = os.path.join(run_dir, "l3")
     l4_dir = os.path.join(run_dir, "l4")
 
     scene_script = os.path.join(repo_root, "carla_smoke", "scenes", "safebench_scenic_scene.py")
-    vision_script = os.path.join(repo_root, "carla_smoke", "pipeline", "vision.py")
     l0_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l0.py")
     l2_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l2.py")
     l3_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l3.py")
-    l4_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l4.py")
     l4_scenario_language_script = os.path.join(repo_root, "carla_smoke", "pipeline", "l4_scenario_language.py")
-    l4_intervention_script = os.path.join(repo_root, "carla_smoke", "pipeline", "run_l4_intervention_from_workdir.py")
 
     os.makedirs(run_dir, exist_ok=True)
 
@@ -208,27 +188,6 @@ def main():
     if not scenario_hint and scene_info.get("description"):
         scenario_hint = f"SafeBench Scenic scenario: {scene_info['description']}"
 
-    vision_json = os.path.join(vision_dir, "observations.json")
-    if not args.skip_agents and not args.skip_vision:
-        vision_command = [
-            sys.executable,
-            vision_script,
-            image_dir,
-            "--model",
-            args.qwen_model,
-            "--url",
-            args.ollama_url,
-            "--timeout",
-            str(args.vision_timeout),
-            "--select",
-            args.select,
-            "--sample-count",
-            str(args.sample_count),
-            "--output-dir",
-            vision_dir,
-        ]
-        run_command(vision_command)
-
     if not args.skip_agents:
         l0_command = [
             sys.executable,
@@ -249,8 +208,6 @@ def main():
             "--output-dir",
             l0_dir,
         ]
-        if not args.skip_vision and os.path.exists(vision_json):
-            l0_command.extend(["--vision-json", vision_json])
         if args.env_file:
             l0_command.extend(["--env-file", args.env_file])
         ego_log = os.path.join(image_dir, "ego_log.csv")
@@ -305,213 +262,79 @@ def main():
                 run_command(l3_command)
 
                 if not args.skip_l4:
-                    if args.l4_backend == "safebench-intervention":
-                        l4_command = [
-                            carla_python,
-                            l4_intervention_script,
-                            "--run-dir",
-                            run_dir,
-                            "--output-dir",
-                            l4_dir,
-                            "--l0-json",
-                            os.path.join(l0_dir, "state.json"),
-                            "--l3-json",
-                            os.path.join(l3_dir, "chains.json"),
-                            "--carla-root",
-                            args.carla_root,
-                            "--host",
-                            args.host,
-                            "--port",
-                            str(args.port),
-                            "--timeout",
-                            str(args.timeout),
-                            "--scene-sample-attempts",
-                            str(args.scene_sample_attempts),
-                            "--frames",
-                            str(args.l4_frames),
-                            "--save-every",
-                            str(args.l4_save_every),
-                            "--local-trigger-frame",
-                            str(args.l4_local_trigger_frame),
-                            "--pre-trigger-seconds",
-                            str(args.l4_pre_trigger_seconds),
-                            "--source-timestep",
-                            str(args.timestep),
-                            "--warmup-ticks",
-                            str(args.warmup_ticks),
-                            "--seed",
-                            str(args.seed),
-                            "--timestep",
-                            str(args.timestep),
-                            "--ego-speed-difference",
-                            str(args.ego_speed_difference),
-                            "--weather",
-                            args.weather,
-                            "--plan-model",
-                            args.model,
-                            "--plan-url",
-                            args.deepseek_url,
-                            "--api-key-env",
-                            args.api_key_env,
-                            "--plan-timeout",
-                            str(args.timeout),
-                            "--intervention-agent",
-                            "opencode" if args.code_agent == "opencode" else "template",
-                            "--opencode-bin",
-                            args.opencode_bin,
-                            "--opencode-model",
-                            args.opencode_model,
-                            "--opencode-repair-attempts",
-                            str(args.opencode_repair_attempts),
-                        ]
-                        if args.skip_plan_agent:
-                            l4_command.append("--skip-plan-agent")
-                        if args.env_file:
-                            l4_command.extend(["--env-file", args.env_file])
-                        if args.l4_all_chains:
-                            l4_command.append("--all-chains")
-                            if args.continue_on_chain_error:
-                                l4_command.append("--continue-on-chain-error")
-                        else:
-                            l4_command.extend(["--chain-index", str(args.l4_chain_index)])
-                        if not args.validate_event_trace:
-                            l4_command.append("--skip-event-trace-validation")
-                    elif args.l4_backend == "code-agent":
-                        l4_town = derive_l4_town(args.town, os.path.join(l0_dir, "state.json"))
-                        l4_command = [
-                            carla_python,
-                            l4_script,
-                            os.path.join(l3_dir, "chains.json"),
-                            "--output-dir",
-                            l4_dir,
-                            "--l0-json",
-                            os.path.join(l0_dir, "state.json"),
-                            "--carla-root",
-                            args.carla_root,
-                            "--host",
-                            args.host,
-                            "--port",
-                            str(args.port),
-                            "--town",
-                            l4_town,
-                            "--frames",
-                            str(args.l4_frames),
-                            "--save-every",
-                            str(args.l4_save_every),
-                            "--local-trigger-frame",
-                            str(args.l4_local_trigger_frame),
-                            "--pre-trigger-seconds",
-                            str(args.l4_pre_trigger_seconds),
-                            "--source-timestep",
-                            str(args.timestep),
-                            "--code-agent",
-                            args.code_agent,
-                            "--opencode-bin",
-                            args.opencode_bin,
-                            "--opencode-model",
-                            args.opencode_model,
-                            "--opencode-repair-attempts",
-                            str(args.opencode_repair_attempts),
-                            "--plan-model",
-                            args.model,
-                            "--plan-url",
-                            args.deepseek_url,
-                            "--api-key-env",
-                            args.api_key_env,
-                            "--plan-timeout",
-                            str(args.timeout),
-                            "--execute",
-                        ]
-                        if args.skip_plan_agent:
-                            l4_command.append("--skip-plan-agent")
-                        if args.env_file:
-                            l4_command.extend(["--env-file", args.env_file])
-                        if args.l4_all_chains:
-                            l4_command.append("--all-chains")
-                            if args.continue_on_chain_error:
-                                l4_command.append("--continue-on-chain-error")
-                        else:
-                            l4_command.extend(["--chain-index", str(args.l4_chain_index)])
-                        if args.validate_event_trace:
-                            l4_command.append("--validate-event-trace")
+                    l4_command = [
+                        carla_python,
+                        l4_scenario_language_script,
+                        os.path.join(l3_dir, "chains.json"),
+                        "--output-dir",
+                        l4_dir,
+                        "--l0-json",
+                        os.path.join(l0_dir, "state.json"),
+                        "--carla-root",
+                        args.carla_root,
+                        "--carla-python",
+                        carla_python,
+                        "--host",
+                        args.host,
+                        "--port",
+                        str(args.port),
+                        "--timeout",
+                        str(args.timeout),
+                        "--scene-sample-attempts",
+                        str(args.scene_sample_attempts),
+                        "--frames",
+                        str(args.l4_frames),
+                        "--save-every",
+                        str(args.l4_save_every),
+                        "--local-trigger-frame",
+                        str(args.l4_local_trigger_frame),
+                        "--pre-trigger-seconds",
+                        str(args.l4_pre_trigger_seconds),
+                        "--source-timestep",
+                        str(args.timestep),
+                        "--warmup-ticks",
+                        str(args.warmup_ticks),
+                        "--seed",
+                        str(args.seed),
+                        "--timestep",
+                        str(args.timestep),
+                        "--ego-speed-difference",
+                        str(args.ego_speed_difference),
+                        "--weather",
+                        args.weather,
+                        "--opencode-bin",
+                        args.opencode_bin,
+                        "--opencode-model",
+                        args.opencode_model,
+                        "--opencode-repair-attempts",
+                        str(args.opencode_repair_attempts),
+                        "--plan-model",
+                        args.model,
+                        "--plan-url",
+                        args.deepseek_url,
+                        "--api-key-env",
+                        args.api_key_env,
+                        "--plan-timeout",
+                        str(args.timeout),
+                        "--execute",
+                    ]
+                    if args.env_file:
+                        l4_command.extend(["--env-file", args.env_file])
+                    if args.l4_all_chains:
+                        l4_command.append("--all-chains")
+                        if args.continue_on_chain_error:
+                            l4_command.append("--continue-on-chain-error")
                     else:
-                        l4_command = [
-                            carla_python,
-                            l4_scenario_language_script,
-                            os.path.join(l3_dir, "chains.json"),
-                            "--output-dir",
-                            l4_dir,
-                            "--l0-json",
-                            os.path.join(l0_dir, "state.json"),
-                            "--carla-root",
-                            args.carla_root,
-                            "--carla-python",
-                            carla_python,
-                            "--host",
-                            args.host,
-                            "--port",
-                            str(args.port),
-                            "--timeout",
-                            str(args.timeout),
-                            "--scene-sample-attempts",
-                            str(args.scene_sample_attempts),
-                            "--frames",
-                            str(args.l4_frames),
-                            "--save-every",
-                            str(args.l4_save_every),
-                            "--local-trigger-frame",
-                            str(args.l4_local_trigger_frame),
-                            "--pre-trigger-seconds",
-                            str(args.l4_pre_trigger_seconds),
-                            "--source-timestep",
-                            str(args.timestep),
-                            "--warmup-ticks",
-                            str(args.warmup_ticks),
-                            "--seed",
-                            str(args.seed),
-                            "--timestep",
-                            str(args.timestep),
-                            "--ego-speed-difference",
-                            str(args.ego_speed_difference),
-                            "--weather",
-                            args.weather,
-                            "--code-agent",
-                            "opencode",
-                            "--opencode-bin",
-                            args.opencode_bin,
-                            "--opencode-model",
-                            args.opencode_model,
-                            "--opencode-repair-attempts",
-                            str(args.opencode_repair_attempts),
-                            "--plan-model",
-                            args.model,
-                            "--plan-url",
-                            args.deepseek_url,
-                            "--api-key-env",
-                            args.api_key_env,
-                            "--plan-timeout",
-                            str(args.timeout),
-                            "--execute",
-                        ]
-                        if args.skip_plan_agent:
-                            l4_command.append("--skip-plan-agent")
-                        if args.env_file:
-                            l4_command.extend(["--env-file", args.env_file])
-                        if args.l4_all_chains:
-                            l4_command.append("--all-chains")
-                            if args.continue_on_chain_error:
-                                l4_command.append("--continue-on-chain-error")
-                        else:
-                            l4_command.extend(["--chain-index", str(args.l4_chain_index)])
-                        if args.validate_event_trace:
-                            l4_command.append("--validate-event-trace")
+                        l4_command.extend(["--chain-index", str(args.l4_chain_index)])
+                    if args.validate_event_trace:
+                        l4_command.append("--validate-event-trace")
                     run_command(l4_command)
 
     manifest = {
         "run_id": run_id,
         "run_dir": run_dir,
         "images": image_dir,
-        "vision": None if args.skip_vision or args.skip_agents else vision_dir,
+        "vision": None,
         "l0": l0_dir,
         "l2": None if args.skip_l2 or args.skip_agents else l2_dir,
         "l3": None if args.skip_l2 or args.skip_l3 or args.skip_agents else l3_dir,
@@ -520,9 +343,7 @@ def main():
         "safebench_scene": scene_info,
         "scenario_hint": scenario_hint,
         "model": args.model,
-        "qwen_model": args.qwen_model,
         "deepseek_url": args.deepseek_url,
-        "ollama_url": args.ollama_url,
         "scene": {
             "carla_python": carla_python,
             "scenic_dir": args.scenic_dir,
@@ -537,8 +358,7 @@ def main():
             "timestep": args.timestep,
             "weather": args.weather,
             "l4_town": args.town or "from_l0_source_map",
-            "l4_code_agent": args.code_agent,
-            "l4_backend": args.l4_backend,
+            "l4_backend": "opencode_scenic",
             "l4_local_trigger_frame": args.l4_local_trigger_frame,
             "l4_pre_trigger_seconds": args.l4_pre_trigger_seconds,
         },
@@ -551,8 +371,6 @@ def main():
     if scene_info.get("scenic_file"):
         print(f"SafeBench scene: {scene_info['scenic_file']}")
     if not args.skip_agents:
-        if not args.skip_vision:
-            print(f"Vision: {vision_dir}")
         print(f"L0/L1: {l0_dir}")
         if not args.skip_l2:
             print(f"L2: {l2_dir}")

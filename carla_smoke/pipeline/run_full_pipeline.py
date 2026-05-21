@@ -34,7 +34,7 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "Run the full recommended pipeline from scratch: SafeBench Scenic capture, "
-            "six-view source images, Qwen multi-frame vision, L0/L1/L2/L3, and all L4 risk chains."
+            "one random six-view source image, remote-LLM L0/L1/L2/L3, and OpenCode-generated Scenic L4 risk chains."
         )
     )
     parser.add_argument("--carla-root", default=default_carla_root)
@@ -51,11 +51,8 @@ def main():
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--model", default="deepseek-v4-flash")
     parser.add_argument("--opencode-model", default="deepseek-v4-flash")
-    parser.add_argument("--qwen-model", default="qwen3.5:0.8b")
-    parser.add_argument("--l4-backend", choices=["safebench-intervention", "code-agent", "scenario-language"], default="scenario-language")
     parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
     parser.add_argument("--env-file", default=None)
-    parser.add_argument("--skip-plan-agent", action="store_true")
     parser.add_argument("--stop-on-chain-error", action="store_true")
     parser.add_argument(
         "--quick",
@@ -110,12 +107,8 @@ def main():
         args.workdir_root,
         "--model",
         args.model,
-        "--qwen-model",
-        args.qwen_model,
         "--api-key-env",
         args.api_key_env,
-        "--code-agent",
-        "opencode",
         "--opencode-bin",
         "opencode",
         "--opencode-model",
@@ -130,12 +123,7 @@ def main():
         "20",
         "--l4-pre-trigger-seconds",
         "2.0",
-        "--l4-backend",
-        args.l4_backend,
     ]
-    if args.skip_plan_agent:
-        command.append("--skip-plan-agent")
-
     if args.scenic_file:
         command.extend(["--scenic-file", args.scenic_file])
     if args.run_id:

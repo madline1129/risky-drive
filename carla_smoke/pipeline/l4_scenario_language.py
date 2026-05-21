@@ -18,7 +18,6 @@ try:
         build_config,
         chain_output_dir,
         chains_from_data,
-        copy_tree_contents,
         normalize_opencode_model_name,
         opencode_skills_dir,
         read_json,
@@ -32,7 +31,6 @@ except ImportError:
         build_config,
         chain_output_dir,
         chains_from_data,
-        copy_tree_contents,
         normalize_opencode_model_name,
         opencode_skills_dir,
         read_json,
@@ -266,10 +264,16 @@ def scenic_context_from_scene(scene):
             "world_position_format": "Use Scenic 2D coordinates: actor = Car at (x @ y).",
             "heading_format": "Use Scenic heading units: with heading yaw deg or facing yaw deg.",
             "z_policy": "Do not emit Point(x, y, z). Treat L0 z only as metadata/hint.",
-            "relative_geometry": "Prefer actor.relative_to_ego over absolute coordinates when exact world points are not spawnable.",
-            "same_side_policy": "If an actor has relative_to_ego.side left/right, repairs may adjust distances only within same_side_search_policy; never flip left/right.",
+        "relative_geometry": "Prefer actor.relative_to_ego over absolute coordinates when exact world points are not spawnable.",
+        "same_side_policy": "If an actor has relative_to_ego.side left/right, repairs may adjust distances only within same_side_search_policy; never flip left/right.",
         },
     }
+
+
+def scenic_context_from_l0(l0_state):
+    source = l0_state.get("source", {}) if isinstance(l0_state, dict) else {}
+    source_map = source.get("source_map") or source.get("map")
+    return scenic_context_from_scene({"source_map": source_map})
 
 
 def primitive(name, **fields):
@@ -278,16 +282,35 @@ def primitive(name, **fields):
     return item
 
 
-def build_semantic_primitives(config):
-    scenario_type = safe_get(config, "carla_plan", "scenario_type", default="unknown")
-    physical_task = config.get("physical_task") or {}
-    risk_object_spec = config.get("risk_object_spec") or {}
-    primary_actor = actor_summary(physical_task.get("primary_actor") or safe_get(risk_object_spec, "primary_object", default={}))
-    scene = config.get("scene_reconstruction") or {}
-    ego = actor_summary(scene.get("ego") or {})
-    front_actor = actor_summary(scene.get("nearest_front_actor") or {})
-    trigger_frame = safe_get(config, "physical_task", "action", "trigger_frame", default=config.get("trigger_frame", 20))
-    scenic_context = scenic_context_from_scene(scene)
+def nearest_front_actor_from_l0(l0_state):
+    actors = l0_state.get("actors", []) if isinstance(l0_state, dict) else []
+    candidates = []
+    for actor in actors if isinstance(actors, list) else []:
+        if not isinstance(actor, dict):
+            continue
+        type_id = str(actor.get("type_id", "")).lower()
+        kind = str(actor.get("kind", "")).lower()
+        if kind != "vehicle" and not type_id.startswith("vehicle."):
+            continue
+        rel_long = as_float(actor.get("relative_longitudinal_m"))
+        rel_lat = as_float(actor.get("relative_lateral_m"), 0.0)
+        if rel_long is None or rel_long < -0.5:
+            continue
+        if abs(rel_lat) > 4.5:
+            continue
+        candidates.append(actor)
+    return min(candidates, key=lambda actor: as_float(actor.get("relative_longitudinal_m"), 9999.0)) if candidates else {}
+
+
+def build_semantic_primitives(config, l0_state=None):
+    l0_state = l0_state or {}
+    scenario_type = config.get("scenario_type", "unknown")
+    primary_actor = actor_summary(config.get("primary_actor") or {})
+    ego = actor_summary((l0_state or {}).get("ego") or {})
+    front_actor = actor_summary(nearest_front_actor_from_l0(l0_state))
+    trigger_frame = int(config.get("trigger_frame", 20) or 20)
+    scenic_context = scenic_context_from_l0(l0_state)
+    action = config.get("action") or {}
 
     primitives = [
         primitive(
@@ -296,19 +319,16 @@ def build_semantic_primitives(config):
             map_absolute_path=scenic_context["map_absolute_path"],
             scenic_header=scenic_context["scenic_header"],
             coordinate_contract=scenic_context["coordinate_contract"],
-            weather=scene.get("weather"),
-            reconstruction_policy=config.get("reconstruction_policy"),
-            spawn_policy=config.get("spawn_policy"),
+            weather=(l0_state or {}).get("weather"),
         ),
         primitive(
             "spawn_ego",
             actor=ego,
             behavior="follow_lane",
-            target_speed_mps=safe_get(config, "carla_plan", "actor_motion_plan", "ego", "target_speed_mps"),
         ),
     ]
 
-    if front_actor:
+    if front_actor and scenario_type != "front_vehicle_brake":
         primitives.append(
             primitive(
                 "spawn_actor_relative",
@@ -335,10 +355,12 @@ def build_semantic_primitives(config):
             [
                 primitive("follow_lane", actor="ego", until_frame=trigger_frame),
                 primitive(
-                    "front_vehicle_brake",
-                    actor="primary_risk_actor",
-                    trigger_frame=trigger_frame,
-                    target_speed_mps=0.0,
+                "front_vehicle_brake",
+                actor="primary_risk_actor",
+                trigger_frame=trigger_frame,
+                    target_speed_mps=action.get("target_speed_mps", 0.0),
+                    brake_intensity=action.get("brake_intensity"),
+                    deceleration_mps2=action.get("deceleration_mps2"),
                     must_be_visible=True,
                 ),
                 primitive("record_expectation", expectation="front vehicle decelerates or stops while ego is still approaching"),
@@ -352,7 +374,7 @@ def build_semantic_primitives(config):
                     "vulnerable_actor_intrusion",
                     actor="primary_risk_actor",
                     trigger_frame=trigger_frame,
-                    path=safe_get(risk_object_spec, "geometry", default={}),
+                    action=action,
                     target="ego_lane",
                     must_cross_or_enter_ego_lane=True,
                 ),
@@ -367,6 +389,7 @@ def build_semantic_primitives(config):
                     "side_vehicle_intrusion",
                     actor="primary_risk_actor",
                     trigger_frame=trigger_frame,
+                    action=action,
                     target="ego_lane",
                     preserve_same_l0_actor=True,
                 ),
@@ -380,6 +403,7 @@ def build_semantic_primitives(config):
                     "road_obstacle_intrusion",
                     actor="primary_risk_actor",
                     trigger_frame=trigger_frame,
+                    action=action,
                     target="ego_path",
                 ),
             ]
@@ -391,8 +415,8 @@ def build_semantic_primitives(config):
                 primitive(
                     "cargo_drop",
                     actor="primary_risk_actor",
-                    carrier=safe_get(risk_object_spec, "carrier_actor"),
                     trigger_frame=trigger_frame,
+                    action=action,
                     target="ego_path",
                 ),
             ]
@@ -403,7 +427,7 @@ def build_semantic_primitives(config):
                 "apply_configured_primary_action",
                 actor="primary_risk_actor",
                 trigger_frame=trigger_frame,
-                action=safe_get(physical_task, "action", default=safe_get(risk_object_spec, "action", default={})),
+                action=action,
             )
         )
 
@@ -415,8 +439,7 @@ def build_semantic_primitives(config):
         "trigger_frame": trigger_frame,
         "primary_actor": primary_actor,
         "semantic_primitives": primitives,
-        "success_criteria": physical_task.get("success_criteria") or risk_object_spec.get("success_criteria"),
-        "forbidden_substitutions": safe_get(risk_object_spec, "forbidden_substitutions", default=[]),
+        "success_criteria": config.get("success_criteria"),
     }
 
 
@@ -466,22 +489,16 @@ def prepare_workspace(args, config_path, primitives_path):
         scenario_language_skill,
         os.path.join(workspace_skills, "l4-scenario-language-codegen"),
     )
-    references_dir = os.path.join(opencode_skills_dir(), "l4-scenario-language-codegen", "references")
-    context_dir = os.path.join(workspace, "context")
-    if os.path.isdir(context_dir):
-        shutil.rmtree(context_dir)
-    if os.path.isdir(references_dir):
-        copy_tree_contents(references_dir, context_dir)
     with open(os.path.join(workspace, "AGENTS.md"), "w", encoding="utf-8") as f:
         f.write(
             "# OpenCode Workspace Instructions\n\n"
             "MANDATORY SKILL: l4-scenario-language-codegen.\n"
-            "Forbidden skills: l4-carla-codegen, l4-safebench-intervention-codegen.\n"
             "Generate Scenic scenario-language code only; do not generate CARLA Python code.\n"
             "Edit only generated_risk_scene.scenic.\n"
             "The file must use the absolute map path from semantic_primitives.json.\n"
             "Use precomputed Scenic 2D coordinates from semantic_primitives.json; never copy raw CARLA y/yaw directly.\n"
             "When absolute placement fails, preserve actor.relative_to_ego.side and use same_side_search_policy.\n"
+            "Write event behavior so semantic_validation in event_trace.json can pass after execution.\n"
             "The file must be executable by Scenic/CARLA.\n"
         )
     write_json(
@@ -498,14 +515,13 @@ def prepare_workspace(args, config_path, primitives_path):
 
 def opencode_prompt(config_path, primitives_path, output_scenic):
     return f"""MANDATORY SKILL: l4-scenario-language-codegen.
-Forbidden skills: l4-carla-codegen, l4-safebench-intervention-codegen.
 
 Task:
 - Read scenario_config.json:
   {config_path}
 - Read semantic_primitives.json:
   {primitives_path}
-- Read l0_state.json and context/scenic_examples.md if present.
+- Read l0_state.json.
 - Edit exactly this Scenic file in place:
   {output_scenic}
 
@@ -515,8 +531,8 @@ Requirements:
 - Use semantic_primitives.set_scene_context.map_absolute_path exactly in `param map = localPath(...)`.
 - Use the precomputed `actor.scenic_position_expression` and `actor.scenic_heading`; never convert raw CARLA x/y/yaw yourself.
 - Prefer `actor.relative_to_ego` for L0 actors. If exact placement fails, use `same_side_search_policy` and keep the original left/right side.
-- Preserve scenario_config.carla_plan.scenario_type exactly.
-- Preserve primary actor kind/type, ego-relative geometry, action, trigger timing, and forbidden substitutions.
+- Preserve scenario_config.scenario_type exactly.
+- Preserve primary actor kind/type, ego-relative geometry, action, and trigger timing.
 - L0 absolute coordinates are hints; relative geometry is authoritative.
 - The generated Scenic must run through carla_smoke/scenes/safebench_scenic_scene.py.
 - Do not write Markdown. Do not ask questions. Edit only generated_risk_scene.scenic.
@@ -527,7 +543,6 @@ def opencode_repair_prompt(config_path, primitives_path, output_scenic, error_ou
     return f"""The generated Scenic scenario failed during Scenic/CARLA execution.
 
 MANDATORY SKILL: l4-scenario-language-codegen.
-Forbidden skills: l4-carla-codegen, l4-safebench-intervention-codegen.
 
 Scenario config:
   {config_path}
@@ -547,7 +562,7 @@ Repair the Scenic file in place.
 - Keep `param map = localPath(...)` on the absolute map path from semantic_primitives.json.
 - Replace any `Point(x, y, z)` / CARLA Python coordinate syntax with Scenic 2D `x @ y` syntax.
 - Do not flip actor.relative_to_ego.side. If a left-side actor does not fit, search only left-side distances; if a right-side actor does not fit, search only right-side distances.
-- If this is a semantic validation failure, use the Semantic validation report below as the repair target. Each failed check includes target, actual, and reason; edit the Scenic scenario so those checks pass.
+- If this is a semantic validation failure, use the Semantic validation report below as the repair target. Each failed check includes target, actual, and reason; edit the Scenic scenario so those checks pass. This feedback is the main regeneration signal.
 - Do not satisfy semantic validation by changing scenario_config.json, semantic_primitives.json, event_trace.json, actor type, or scenario_type. Fix only generated_risk_scene.scenic.
 - If a parameter used in range(...) can be float, cast it to int(...) or replace it with a fixed integer.
 - Do not switch to Python code.
@@ -754,10 +769,10 @@ def write_event_trace_from_states(images_dir, config, primitives):
         }
         frame.update(frame_primary_fields(state, primary))
         frames.append(frame)
-    scenario_type = safe_get(config, "carla_plan", "scenario_type")
+    scenario_type = config.get("scenario_type")
     trace = {
         "scenario_type": scenario_type,
-        "trigger_frame": safe_get(config, "physical_task", "action", "trigger_frame", default=config.get("trigger_frame", 20)),
+        "trigger_frame": config.get("trigger_frame", 20),
         "event_applied": f"{scenario_type} generated by scenario-language Scenic backend",
         "execution_backend": "scenario_language_opencode_scenic",
         "source_l3_chain_id": config.get("source_l3_chain_id"),
@@ -1121,7 +1136,74 @@ def run_scenic_with_repair(args, config_path, primitives_path, scenic_file, imag
             repair_opencode(args, config_path, primitives_path, scenic_file, last_error)
 
 
+def validation_summary(trace):
+    if not isinstance(trace, dict):
+        return "没有生成 event_trace，无法评估完成质量。"
+    validation = trace.get("semantic_validation") or {}
+    if not validation:
+        return "没有启用语义验收，只有 Scenic/CARLA 执行结果。"
+    check_count = validation.get("check_count", 0)
+    failed_count = validation.get("failed_count", 0)
+    status = "通过" if validation.get("passed") else "未通过"
+    return f"语义验收{status}：共 {check_count} 项检查，失败 {failed_count} 项。"
+
+
+def validation_errors(trace):
+    if not isinstance(trace, dict):
+        return ["没有生成 event_trace。"]
+    reasons = trace.get("semantic_validation_failed_reasons")
+    if reasons:
+        return [str(reason) for reason in reasons]
+    validation = trace.get("semantic_validation") or {}
+    checks = validation.get("checks") or []
+    return [str(check.get("reason") or check.get("name")) for check in checks if not check.get("passed")] or []
+
+
+def write_l4_feedback_report(path, config, before_trace=None, feedback_text="", final_trace=None, final_error=""):
+    errors = validation_errors(before_trace) if before_trace else []
+    event_desc = config.get("chain_description") or config.get("expected_visual_result") or "未提供事件描述"
+    lines = [
+        "# L4执行反馈报告",
+        "",
+        "## 1. 本次事件描述",
+        f"- 场景类型：{config.get('scenario_type')}",
+        f"- 触发帧：{config.get('trigger_frame')}",
+        f"- 事件：{event_desc}",
+        "",
+        "## 2. 反馈之前的完成质量",
+        validation_summary(before_trace) if before_trace else "首次执行还没有形成可用验收结果。",
+        "",
+        "## 3. 错误具体出在哪（如果有错误）",
+    ]
+    if errors:
+        lines.extend(f"- {reason}" for reason in errors)
+    elif final_error:
+        lines.append(f"- {final_error}")
+    else:
+        lines.append("- 没有发现语义验收错误。")
+    lines.extend(
+        [
+            "",
+            "## 4. 反馈内容",
+            feedback_text.strip() if feedback_text else "没有触发反馈修复。",
+            "",
+            "## 5. 反馈后执行效果",
+            validation_summary(final_trace) if final_trace else ("执行失败，未得到最终 event_trace。" if final_error else "尚未重新执行。"),
+        ]
+    )
+    if final_trace and validation_errors(final_trace):
+        lines.append("")
+        lines.append("反馈后仍未通过的原因：")
+        lines.extend(f"- {reason}" for reason in validation_errors(final_trace))
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines).rstrip() + "\n")
+
+
 def run_scenic_validate_with_repair(args, config_path, primitives_path, scenic_file, images_dir, config, primitives):
+    report_path = os.path.join(os.path.dirname(config_path), "..", "l4_feedback_report.md")
+    first_trace = None
+    feedback_text = ""
     for attempt in range(args.opencode_repair_attempts + 1):
         trace = None
         try:
@@ -1133,17 +1215,23 @@ def run_scenic_validate_with_repair(args, config_path, primitives_path, scenic_f
                     validate_scenario_language_event_trace(config, primitives, trace)
                 finally:
                     write_json(os.path.join(images_dir, "event_trace.json"), trace)
+            write_l4_feedback_report(report_path, config, first_trace, feedback_text, trace)
             return trace
         except (subprocess.CalledProcessError, RuntimeError) as exc:
             last_error = error_text(exc)
             if isinstance(trace, dict) and trace.get("semantic_validation"):
+                if first_trace is None:
+                    first_trace = trace
                 last_error += (
                     "\n\nSemantic validation report with target/actual/pass fields:\n"
                     + json.dumps(trace["semantic_validation"], ensure_ascii=False, indent=2)
                     + "\n\nExpected primary actor:\n"
                     + json.dumps(trace.get("expected_primary_actor", {}), ensure_ascii=False, indent=2)
                 )
+            if not feedback_text:
+                feedback_text = last_error
             if attempt >= args.opencode_repair_attempts:
+                write_l4_feedback_report(report_path, config, first_trace, feedback_text, trace, final_error=last_error)
                 raise
             print(f"\nAsking opencode to repair Scenic file ({attempt + 1}/{args.opencode_repair_attempts}).")
             repair_opencode(args, config_path, primitives_path, scenic_file, last_error)
@@ -1161,12 +1249,15 @@ def execute_chain(args, chain, l0_state, output_dir):
         source_timestep=args.source_timestep,
         plan_agent_args=args,
     )
-    config["execution_backend"] = "scenario_language"
+    plan_agent_raw = config.pop("_l4_plan_agent_raw", None)
+    if plan_agent_raw is not None:
+        write_json(os.path.join(output_dir, "l4_plan_agent_raw.json"), plan_agent_raw)
+    config["execution_backend"] = "opencode_scenic"
     config["executor"] = "carla_smoke/scenes/safebench_scenic_scene.py"
     config_path = os.path.join(output_dir, "scenario_config.json")
     write_json(config_path, config)
 
-    primitives = build_semantic_primitives(config)
+    primitives = build_semantic_primitives(config, l0_state)
     primitives_path = os.path.join(output_dir, "semantic_primitives.json")
     write_json(primitives_path, primitives)
 
@@ -1187,7 +1278,7 @@ def execute_chain(args, chain, l0_state, output_dir):
         "semantic_primitives": os.path.abspath(primitives_path),
         "generated_scenic": os.path.abspath(output_scenic),
         "risk_images": os.path.abspath(images_dir),
-        "scenario_type": safe_get(config, "carla_plan", "scenario_type"),
+        "scenario_type": config.get("scenario_type"),
     }
 
 
@@ -1219,11 +1310,9 @@ def main():
     parser.add_argument("--weather", default="ClearNoon")
     parser.add_argument("--execute", dest="execute", action="store_true", default=True)
     parser.add_argument("--no-execute", dest="execute", action="store_false")
-    parser.add_argument("--code-agent", choices=["opencode"], default="opencode")
     parser.add_argument("--opencode-bin", default="opencode")
     parser.add_argument("--opencode-model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
-    parser.add_argument("--skip-plan-agent", action="store_true")
     parser.add_argument("--plan-model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--plan-url", default=DEFAULT_DEEPSEEK_URL)
     parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
@@ -1253,7 +1342,6 @@ def main():
                         "chain_id": chain.get("id"),
                         "source_l2_id": chain.get("parent_l2_id"),
                         "output_dir": os.path.abspath(args.output_dir),
-                        "scenario_type": safe_get(chain, "carla_plan", "scenario_type"),
                         "error": repr(exc),
                     }
                 )

@@ -46,7 +46,7 @@ def main():
     parser.add_argument("--scene-sample-attempts", type=int, default=20)
     parser.add_argument("--frames", type=int, default=600, help="Scene capture ticks. 600 * 0.05s = 30s by default.")
     parser.add_argument("--save-every", type=int, default=20, help="Capture one scene image every N ticks. 20 * 0.05s = 1s by default.")
-    parser.add_argument("--sample-count", type=int, default=1, help="Number of sampled montage frames for Qwen/L1.")
+    parser.add_argument("--sample-count", type=int, default=1, help="Number of sampled montage frames for L1.")
     parser.set_defaults(single_random_frame=True)
     parser.add_argument("--single-random-frame", dest="single_random_frame", action="store_true", help="Capture exactly one random source frame from the SafeBench scene.")
     parser.add_argument("--sequence-capture", dest="single_random_frame", action="store_false", help="Capture the old saved-frame sequence instead of a single random frame.")
@@ -59,21 +59,16 @@ def main():
     parser.add_argument("--workdir-root", default=default_workdir_root)
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--model", default="deepseek-v4-flash")
-    parser.add_argument("--qwen-model", default="qwen3.5:0.8b")
     parser.add_argument("--deepseek-url", default="https://api.deepseek.com/chat/completions")
-    parser.add_argument("--ollama-url", default="http://127.0.0.1:11434/api/chat")
     parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
     parser.add_argument("--env-file", default=None)
-    parser.add_argument("--code-agent", choices=["template", "opencode"], default="opencode")
     parser.add_argument("--opencode-bin", default="opencode")
     parser.add_argument("--opencode-model", default="deepseek-v4-flash")
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
-    parser.add_argument("--skip-plan-agent", action="store_true", help="Skip the L4 PlanAgent and use L3 carla_plan/fallback rules.")
     parser.add_argument("--l4-frames", type=int, default=180)
     parser.add_argument("--l4-save-every", type=int, default=5)
     parser.add_argument("--l4-local-trigger-frame", type=int, default=20, help="Start each generated event 1s into the L4 replay by default.")
     parser.add_argument("--l4-pre-trigger-seconds", type=float, default=2.0, help="Reconstruct from about 2s before the closest-risk source frame.")
-    parser.add_argument("--l4-backend", choices=["safebench-intervention", "code-agent", "scenario-language"], default="scenario-language")
     parser.add_argument("--skip-event-trace-validation", action="store_true")
     parser.add_argument("--stop-on-chain-error", action="store_true", help="Stop all-chain execution when one L4 chain fails.")
     parser.add_argument("--extra-arg", action="append", default=[], help="Additional raw argument passed to run_safebench.py. May be repeated.")
@@ -121,14 +116,8 @@ def main():
         args.model,
         "--deepseek-url",
         args.deepseek_url,
-        "--qwen-model",
-        args.qwen_model,
-        "--ollama-url",
-        args.ollama_url,
         "--api-key-env",
         args.api_key_env,
-        "--code-agent",
-        args.code_agent,
         "--opencode-bin",
         args.opencode_bin,
         "--opencode-model",
@@ -143,14 +132,10 @@ def main():
         str(args.l4_local_trigger_frame),
         "--l4-pre-trigger-seconds",
         str(args.l4_pre_trigger_seconds),
-        "--l4-backend",
-        args.l4_backend,
         "--l4-all-chains",
     ]
     if args.single_random_frame:
         command.append("--single-random-frame")
-    if args.skip_plan_agent:
-        command.append("--skip-plan-agent")
     if args.carla_python:
         command.extend(["--carla-python", args.carla_python])
     if args.scenic_file:

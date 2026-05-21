@@ -212,36 +212,8 @@ def normalize_output(parsed, l1_data, source_l1_file):
             inherit_actor_context(event, risk_for_event(risks_by_rank, event))
             normalized.append(event)
 
-    risks = l1_risks_from_data(l1_data)[:5]
-    for idx, risk in enumerate(risks, start=1):
-        existing = [event for event in normalized if event.get("parent_l1_rank") == idx]
-        if len(existing) >= 2:
-            continue
-        for event in fallback_events_for_risk(risk, idx):
-            if len([item for item in normalized if item.get("parent_l1_rank") == idx]) >= 2:
-                break
-            inherit_actor_context(event, risk)
-            normalized.append(event)
-
-    while len(normalized) < 10:
-        idx = len(normalized) + 1
-        rank = ((idx - 1) // 2) + 1
-        normalized.append(
-            {
-                "level": "L2",
-                "id": f"L2-{rank}{'a' if idx % 2 == 1 else 'b'}",
-                "parent_l1_rank": rank,
-                "parent_l1_name": "待确认风险薄弱环节",
-                "trigger_name": "待确认触发事件",
-                "counterfactual_intervention": "需要更完整的 L1 输入后生成",
-                "mechanism": "模型未返回足够结构化结果",
-                "immediate_effect": "unknown",
-                "required_preconditions": [],
-                "observability": "纯假设",
-                "plausibility": "低",
-                "boundary": "L2只定义触发事件，L3再展开物理演化",
-            }
-        )
+    if len(normalized) != 10:
+        raise ValueError(f"L2 LLM output must contain exactly 10 trigger events, got {len(normalized)}")
 
     normalized = normalized[:10]
     for idx, event in enumerate(normalized, start=1):
@@ -278,14 +250,9 @@ def main():
     prompt = build_prompt(l1_data, l0_data)
 
     print(f"L2 DeepSeek input: {args.l1_json}")
-    raw_response = ""
-    parsed = None
-    try:
-        api_key = get_api_key(args.api_key_env, args.env_file)
-        raw_response = chat_json(args.url, args.model, api_key, prompt, args.timeout)
-        parsed = parse_json_response(raw_response)
-    except (DeepSeekError, json.JSONDecodeError) as exc:
-        print(f"WARNING: DeepSeek L2 failed; using deterministic fallback events: {exc}", file=sys.stderr)
+    api_key = get_api_key(args.api_key_env, args.env_file)
+    raw_response = chat_json(args.url, args.model, api_key, prompt, args.timeout)
+    parsed = parse_json_response(raw_response)
 
     output = normalize_output(parsed, l1_data, args.l1_json)
     triggers_path = os.path.join(args.output_dir, "triggers.json")
