@@ -4,7 +4,9 @@
 import argparse
 import glob
 import json
+import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -60,23 +62,124 @@ def format_float(value, digits=3):
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 
-def scenic_position_2d(location):
+def as_float(value, default=None):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_degrees(degrees):
+    value = float(degrees)
+    while value <= -180.0:
+        value += 360.0
+    while value > 180.0:
+        value -= 360.0
+    return value
+
+
+def carla_to_scenic_position_2d(location):
     if not isinstance(location, dict):
         return None
-    x = format_float(location.get("x"))
-    y = format_float(location.get("y"))
+    x_value = as_float(location.get("x"))
+    y_value = as_float(location.get("y"))
+    if x_value is None or y_value is None:
+        return None
+    x = format_float(x_value)
+    y = format_float(-y_value)
     if x is None or y is None:
         return None
     return f"{x} @ {y}"
 
 
-def scenic_heading(rotation):
+def carla_to_scenic_heading(rotation):
     if not isinstance(rotation, dict):
         return None
-    yaw = format_float(rotation.get("yaw"))
-    if yaw is None:
+    yaw_value = as_float(rotation.get("yaw"))
+    if yaw_value is None:
         return None
-    return f"{yaw} deg"
+    scenic_heading_deg = normalize_degrees(-(yaw_value + 90.0))
+    return f"{format_float(scenic_heading_deg)} deg"
+
+
+def relative_to_ego_summary(actor):
+    rel_long = as_float(
+        actor.get("relative_longitudinal_m", actor.get("initial_relative_longitudinal_m")),
+        None,
+    )
+    rel_lat = as_float(
+        actor.get("relative_lateral_m", actor.get("initial_relative_lateral_m")),
+        None,
+    )
+    distance = as_float(actor.get("distance_m", actor.get("initial_distance_m")), None)
+    if rel_long is None and rel_lat is None:
+        return None
+    side = None
+    if rel_lat is not None:
+        if rel_lat < -0.05:
+            side = "left"
+        elif rel_lat > 0.05:
+            side = "right"
+        else:
+            side = "center"
+    relative_position = actor.get("relative_position") or actor.get("initial_relative_position")
+    summary = {
+        "longitudinal_m": rel_long,
+        "lateral_m": rel_lat,
+        "lateral_distance_m": abs(rel_lat) if rel_lat is not None else None,
+        "side": side,
+        "relative_position": relative_position,
+        "distance_m": distance,
+        "same_lane_as_ego": actor.get("same_lane_as_ego"),
+        "hard_constraints": {
+            "preserve_side": side in ("left", "right"),
+            "preserve_longitudinal_sign": rel_long is not None,
+            "side_must_not_flip": side in ("left", "right"),
+        },
+        "same_side_search_policy": {
+            "enabled": True,
+            "why": "If the exact absolute Scenic position does not fit, preserve L0 ego-relative geometry instead of changing sides.",
+            "allowed_lateral_m": same_side_lateral_candidates(rel_lat),
+            "allowed_longitudinal_m": longitudinal_candidates(rel_long),
+            "forbidden": [
+                "changing left to right or right to left",
+                "changing front to rear unless the original actor is rear",
+                "dropping the original actor type/kind",
+            ],
+        },
+    }
+    return {key: value for key, value in summary.items() if value is not None}
+
+
+def same_side_lateral_candidates(lateral_m):
+    value = as_float(lateral_m)
+    if value is None:
+        return []
+    base = max(0.5, abs(value))
+    candidates = [base, base - 0.5, base + 0.5, base - 1.0, base + 1.0, base + 1.5]
+    cleaned = []
+    for candidate in candidates:
+        rounded = round(max(0.5, candidate), 3)
+        if rounded not in cleaned:
+            cleaned.append(rounded)
+    return cleaned
+
+
+def longitudinal_candidates(longitudinal_m):
+    value = as_float(longitudinal_m)
+    if value is None:
+        return []
+    sign = -1.0 if value < 0 else 1.0
+    base = abs(value)
+    candidates = [base, base - 1.0, base + 1.0, base - 2.0, base + 2.0]
+    cleaned = []
+    for candidate in candidates:
+        rounded = round(sign * max(0.5, candidate), 3)
+        if rounded not in cleaned:
+            cleaned.append(rounded)
+    return cleaned
 
 
 def normalize_town_name(source_map):
@@ -110,26 +213,34 @@ def actor_summary(actor):
         return {}
     location = actor.get("location") or actor.get("initial_location")
     rotation = actor.get("rotation") or actor.get("initial_rotation")
-    position_2d = scenic_position_2d(location)
-    heading = scenic_heading(rotation)
+    position_2d = carla_to_scenic_position_2d(location)
+    heading = carla_to_scenic_heading(rotation)
+    rel_long = actor.get("relative_longitudinal_m", actor.get("initial_relative_longitudinal_m"))
+    rel_lat = actor.get("relative_lateral_m", actor.get("initial_relative_lateral_m"))
+    distance = actor.get("distance_m", actor.get("initial_distance_m"))
+    relative = relative_to_ego_summary(actor)
     summary = {
         "source": actor.get("source"),
         "actor_id": actor.get("actor_id") or actor.get("id"),
         "type_id": actor.get("type_id"),
         "kind": actor.get("kind"),
         "role": actor.get("role") or actor.get("role_name"),
+        "carla_location": location,
+        "carla_rotation": rotation,
         "location": location,
         "rotation": rotation,
-        "relative_position": actor.get("relative_position"),
-        "relative_longitudinal_m": actor.get("relative_longitudinal_m"),
-        "relative_lateral_m": actor.get("relative_lateral_m"),
-        "distance_m": actor.get("distance_m"),
+        "relative_position": actor.get("relative_position") or actor.get("initial_relative_position"),
+        "relative_longitudinal_m": rel_long,
+        "relative_lateral_m": rel_lat,
+        "distance_m": distance,
     }
     if position_2d:
         summary["scenic_position_2d"] = position_2d
         summary["scenic_position_expression"] = f"({position_2d})"
     if heading:
         summary["scenic_heading"] = heading
+    if relative:
+        summary["relative_to_ego"] = relative
     if isinstance(location, dict) and location.get("z") is not None:
         summary["z_hint_m"] = location.get("z")
     return summary
@@ -149,10 +260,14 @@ def scenic_context_from_scene(scene):
             "model scenic.simulators.carla.model",
         ],
         "coordinate_contract": {
+            "source": "Scenic/src/scenic/simulators/carla/utils/utils.py",
+            "carla_to_scenic_position": "scenic_x = carla_x; scenic_y = -carla_y",
+            "carla_to_scenic_heading": "scenic_heading_deg = normalize_degrees(-(carla_yaw_deg + 90))",
             "world_position_format": "Use Scenic 2D coordinates: actor = Car at (x @ y).",
             "heading_format": "Use Scenic heading units: with heading yaw deg or facing yaw deg.",
             "z_policy": "Do not emit Point(x, y, z). Treat L0 z only as metadata/hint.",
-            "relative_geometry": "Prefer ego-relative road points when absolute coordinates are not directly usable.",
+            "relative_geometry": "Prefer actor.relative_to_ego over absolute coordinates when exact world points are not spawnable.",
+            "same_side_policy": "If an actor has relative_to_ego.side left/right, repairs may adjust distances only within same_side_search_policy; never flip left/right.",
         },
     }
 
@@ -337,7 +452,7 @@ def prepare_workspace(args, config_path, primitives_path):
         "model scenic.simulators.carla.model\n"
         'EGO_MODEL = "vehicle.lincoln.mkz_2017"\n\n'
         "# TODO: implement ego, primary risk actor, and behavior from semantic_primitives.json.\n"
-        "# Coordinate rule: use Scenic 2D positions like (-184.435 @ 113.147), never Point(x, y, z).\n"
+        "# Coordinate rule: use converted Scenic 2D positions from semantic_primitives.json, never raw CARLA x/y or Point(x, y, z).\n"
     )
     with open(output_scenic, "w", encoding="utf-8") as f:
         f.write(seed)
@@ -365,7 +480,8 @@ def prepare_workspace(args, config_path, primitives_path):
             "Generate Scenic scenario-language code only; do not generate CARLA Python code.\n"
             "Edit only generated_risk_scene.scenic.\n"
             "The file must use the absolute map path from semantic_primitives.json.\n"
-            "Use Scenic 2D coordinate syntax such as `at (-184.435 @ 113.147)`, never `Point(x, y, z)`.\n"
+            "Use precomputed Scenic 2D coordinates from semantic_primitives.json; never copy raw CARLA y/yaw directly.\n"
+            "When absolute placement fails, preserve actor.relative_to_ego.side and use same_side_search_policy.\n"
             "The file must be executable by Scenic/CARLA.\n"
         )
     write_json(
@@ -397,8 +513,8 @@ Requirements:
 - Generate Scenario/Scenic language, not Python.
 - Follow semantic_primitives.json as the hard primitive graph.
 - Use semantic_primitives.set_scene_context.map_absolute_path exactly in `param map = localPath(...)`.
-- Use Scenic 2D position syntax such as `at (-184.435 @ 113.147)`; never emit `Point(x, y, z)`.
-- Use Scenic heading syntax such as `with heading -91.466 deg` or `facing -91.466 deg`.
+- Use the precomputed `actor.scenic_position_expression` and `actor.scenic_heading`; never convert raw CARLA x/y/yaw yourself.
+- Prefer `actor.relative_to_ego` for L0 actors. If exact placement fails, use `same_side_search_policy` and keep the original left/right side.
 - Preserve scenario_config.carla_plan.scenario_type exactly.
 - Preserve primary actor kind/type, ego-relative geometry, action, trigger timing, and forbidden substitutions.
 - L0 absolute coordinates are hints; relative geometry is authoritative.
@@ -430,6 +546,8 @@ Repair the Scenic file in place.
 - Fix Scenic syntax/runtime issues.
 - Keep `param map = localPath(...)` on the absolute map path from semantic_primitives.json.
 - Replace any `Point(x, y, z)` / CARLA Python coordinate syntax with Scenic 2D `x @ y` syntax.
+- Do not flip actor.relative_to_ego.side. If a left-side actor does not fit, search only left-side distances; if a right-side actor does not fit, search only right-side distances.
+- If this is a semantic validation failure, fix the Scenic scenario so event_trace preserves the expected relative side/longitudinal/lateral geometry and risk action.
 - If a parameter used in range(...) can be float, cast it to int(...) or replace it with a fixed integer.
 - Do not switch to Python code.
 - Do not write Markdown. Edit only generated_risk_scene.scenic.
@@ -502,32 +620,442 @@ def repair_opencode(args, config_path, primitives_path, output_scenic, error_out
     )
 
 
+def require(condition, message):
+    if not condition:
+        raise RuntimeError(message)
+
+
+def infer_saved_frame(path, state):
+    frame = state.get("frame") or safe_get(state, "source", "frame")
+    if frame is not None:
+        try:
+            return int(frame)
+        except (TypeError, ValueError):
+            pass
+    for text in (os.path.basename(path), str(safe_get(state, "source", "image_file") or "")):
+        match = re.search(r"(?:state|rgb)_(\d+)", text)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def point_from_value(value):
+    if not isinstance(value, dict):
+        return None
+    x = as_float(value.get("x"))
+    y = as_float(value.get("y"))
+    z = as_float(value.get("z"), 0.0)
+    if x is None or y is None:
+        return None
+    return {"x": x, "y": y, "z": z}
+
+
+def point_distance(a, b):
+    if not a or not b:
+        return None
+    return math.sqrt(
+        (float(a.get("x", 0.0)) - float(b.get("x", 0.0))) ** 2
+        + (float(a.get("y", 0.0)) - float(b.get("y", 0.0))) ** 2
+        + (float(a.get("z", 0.0)) - float(b.get("z", 0.0))) ** 2
+    )
+
+
+def signed_side(value):
+    numeric = as_float(value)
+    if numeric is None or abs(numeric) <= 0.05:
+        return 0
+    return -1 if numeric < 0 else 1
+
+
+def primary_actor_candidates(actors, primary):
+    if not isinstance(actors, list):
+        return []
+    expected_type = primary.get("type_id")
+    expected_kind = primary.get("kind")
+    candidates = []
+    for actor in actors:
+        if not isinstance(actor, dict):
+            continue
+        score = 0
+        if expected_type and actor.get("type_id") == expected_type:
+            score += 10
+        if expected_kind and actor.get("kind") == expected_kind:
+            score += 5
+        if score:
+            candidates.append((score, actor))
+    if not candidates and expected_type:
+        candidates = [(1, actor) for actor in actors if isinstance(actor, dict) and str(actor.get("type_id", "")).split(".")[0] == str(expected_type).split(".")[0]]
+    candidates.sort(key=lambda item: (-item[0], abs(as_float(item[1].get("distance_m"), 9999.0))))
+    return [actor for _, actor in candidates]
+
+
+def select_primary_actor(state, primary):
+    candidates = primary_actor_candidates(state.get("actors") or [], primary)
+    if not candidates:
+        return None
+    relative = primary.get("relative_to_ego") or {}
+    expected_long = as_float(relative.get("longitudinal_m"), as_float(primary.get("relative_longitudinal_m")))
+    expected_lat = as_float(relative.get("lateral_m"), as_float(primary.get("relative_lateral_m")))
+    if expected_long is None and expected_lat is None:
+        return candidates[0]
+
+    def score(actor):
+        total = 0.0
+        if expected_long is not None:
+            total += abs(as_float(actor.get("relative_longitudinal_m"), 9999.0) - expected_long)
+        if expected_lat is not None:
+            total += abs(as_float(actor.get("relative_lateral_m"), 9999.0) - expected_lat)
+        return total
+
+    return min(candidates, key=score)
+
+
+def frame_primary_fields(state, primary):
+    actor = select_primary_actor(state, primary)
+    if not actor:
+        return {"primary_actor_found": False}
+    location = point_from_value(actor.get("location"))
+    fields = {
+        "primary_actor_found": True,
+        "primary_actor_id": actor.get("id") or actor.get("actor_id"),
+        "primary_actor_type_id": actor.get("type_id"),
+        "primary_actor_kind": actor.get("kind"),
+        "primary_actor_speed_mps": actor.get("speed_mps"),
+        "primary_actor_position": location,
+        "relative_position": actor.get("relative_position"),
+        "relative_longitudinal_m": actor.get("relative_longitudinal_m"),
+        "relative_lateral_m": actor.get("relative_lateral_m"),
+        "distance_to_ego_m": actor.get("distance_m"),
+        "same_lane_as_ego": actor.get("same_lane_as_ego"),
+    }
+    primary_type = str(primary.get("type_id", ""))
+    if primary.get("kind") in ("pedestrian", "walker", "cyclist") or primary_type.startswith("walker"):
+        fields["vulnerable_actor_position"] = location
+    if primary.get("kind") == "vehicle" or primary_type.startswith("vehicle"):
+        fields["front_actor_speed_mps"] = actor.get("speed_mps")
+        fields["front_distance_m"] = actor.get("relative_longitudinal_m") or actor.get("distance_m")
+    return fields
+
+
 def write_event_trace_from_states(images_dir, config, primitives):
     frames = []
+    primary = primitives.get("primary_actor") or {}
     for path in sorted(glob.glob(os.path.join(images_dir, "state_*.json"))):
         state = read_json(path)
         ego = state.get("ego") or {}
-        frames.append(
-            {
-                "frame": state.get("frame"),
-                "ego_speed_mps": ego.get("speed_mps"),
-                "ego_location": ego.get("location"),
-                "actor_count": len(state.get("actors") or []),
-                "image_file": safe_get(state, "source", "image_file"),
-            }
-        )
+        frame = {
+            "frame": infer_saved_frame(path, state),
+            "ego_speed_mps": ego.get("speed_mps"),
+            "ego_location": ego.get("location"),
+            "actor_count": len(state.get("actors") or []),
+            "image_file": safe_get(state, "source", "image_file")
+            or os.path.basename(path).replace("state_", "rgb_").replace(".json", ".png"),
+        }
+        frame.update(frame_primary_fields(state, primary))
+        frames.append(frame)
+    scenario_type = safe_get(config, "carla_plan", "scenario_type")
     trace = {
-        "scenario_type": safe_get(config, "carla_plan", "scenario_type"),
+        "scenario_type": scenario_type,
+        "trigger_frame": safe_get(config, "physical_task", "action", "trigger_frame", default=config.get("trigger_frame", 20)),
+        "event_applied": f"{scenario_type} generated by scenario-language Scenic backend",
         "execution_backend": "scenario_language_opencode_scenic",
         "source_l3_chain_id": config.get("source_l3_chain_id"),
         "semantic_primitives_file": "semantic_primitives.json",
         "generated_scenic_file": "opencode_scenario_language_workspace/generated_risk_scene.scenic",
+        "expected_primary_actor": primary,
         "frames": frames,
-        "note": "Trace is reconstructed from Scenic capture state files; semantic validation is intentionally lightweight for the scenario-language prototype.",
+        "note": "Trace is reconstructed from Scenic capture state files and includes primary actor relative geometry for semantic validation.",
         "primitive_count": len(primitives.get("semantic_primitives") or []),
     }
     write_json(os.path.join(images_dir, "event_trace.json"), trace)
     return trace
+
+
+def split_frames_by_trigger(frames, trigger_frame):
+    before = []
+    after = []
+    for frame in frames:
+        frame_index = frame.get("frame")
+        if frame_index is None or frame_index >= trigger_frame:
+            after.append(frame)
+        else:
+            before.append(frame)
+    return before, after
+
+
+def numeric_values(frames, key):
+    values = []
+    for frame in frames:
+        value = as_float(frame.get(key))
+        if value is not None:
+            values.append(value)
+    return values
+
+
+def point_values(frames, key):
+    return [point for point in (point_from_value(frame.get(key)) for frame in frames) if point]
+
+
+def check_record(name, target, actual, passed, reason=None):
+    record = {
+        "name": name,
+        "target": target,
+        "actual": actual,
+        "passed": bool(passed),
+    }
+    if reason:
+        record["reason"] = reason
+    return record
+
+
+def append_check(checks, name, target, actual, passed, reason=None):
+    checks.append(check_record(name, target, actual, passed, reason))
+    return passed
+
+
+def fail_reasons(checks):
+    return [check.get("reason") or check.get("name") for check in checks if not check.get("passed")]
+
+
+def validate_initial_relative_geometry(primary, frames, checks):
+    relative = primary.get("relative_to_ego") or {}
+    expected_lat = as_float(relative.get("lateral_m"), as_float(primary.get("relative_lateral_m")))
+    expected_long = as_float(relative.get("longitudinal_m"), as_float(primary.get("relative_longitudinal_m")))
+    if expected_lat is None and expected_long is None:
+        return
+    first = next((frame for frame in frames if frame.get("primary_actor_found")), None)
+    if not append_check(
+        checks,
+        "primary_actor_found",
+        "primary actor matching expected type/kind appears in captured states",
+        bool(first),
+        bool(first),
+        "primary actor was not found in captured states",
+    ):
+        return
+    actual_lat = as_float(first.get("relative_lateral_m"))
+    actual_long = as_float(first.get("relative_longitudinal_m"))
+    if expected_lat is not None:
+        append_check(
+            checks,
+            "initial_lateral_present",
+            "primary actor relative_lateral_m is present",
+            actual_lat,
+            actual_lat is not None,
+            "primary actor relative_lateral_m is missing",
+        )
+        if actual_lat is not None:
+            append_check(
+                checks,
+                "initial_side_preserved",
+                {"expected_lateral_sign": signed_side(expected_lat), "expected_lateral_m": expected_lat},
+                {"actual_lateral_sign": signed_side(actual_lat), "actual_lateral_m": actual_lat},
+                signed_side(expected_lat) == 0 or signed_side(actual_lat) == signed_side(expected_lat),
+                f"primary actor side flipped; expected lateral {expected_lat:.3f}, got {actual_lat:.3f}",
+            )
+            append_check(
+                checks,
+                "initial_lateral_tolerance",
+                {"expected_lateral_m": expected_lat, "tolerance_m": 1.5},
+                {"actual_lateral_m": actual_lat, "error_m": abs(actual_lat - expected_lat)},
+                abs(actual_lat - expected_lat) <= 1.5,
+                f"primary actor lateral offset drifted too far; expected {expected_lat:.3f}, got {actual_lat:.3f}",
+            )
+    if expected_long is not None:
+        append_check(
+            checks,
+            "initial_longitudinal_present",
+            "primary actor relative_longitudinal_m is present",
+            actual_long,
+            actual_long is not None,
+            "primary actor relative_longitudinal_m is missing",
+        )
+        if actual_long is not None:
+            append_check(
+                checks,
+                "initial_longitudinal_tolerance",
+                {"expected_longitudinal_m": expected_long, "tolerance_m": 3.0},
+                {"actual_longitudinal_m": actual_long, "error_m": abs(actual_long - expected_long)},
+                abs(actual_long - expected_long) <= 3.0,
+                f"primary actor longitudinal offset drifted too far; expected {expected_long:.3f}, got {actual_long:.3f}",
+            )
+
+
+def validate_scenario_language_event_trace(config, primitives, trace):
+    checks = []
+    frames = trace.get("frames") or []
+    primary = primitives.get("primary_actor") or {}
+    append_check(
+        checks,
+        "frames_present",
+        "event_trace.frames is non-empty",
+        len(frames),
+        bool(frames),
+        "event_trace.frames is empty",
+    )
+    if frames:
+        validate_initial_relative_geometry(primary, frames, checks)
+
+    scenario_type = trace.get("scenario_type")
+    trigger_frame = int(trace.get("trigger_frame") or 20)
+    before, after = split_frames_by_trigger(frames, trigger_frame)
+    append_check(
+        checks,
+        "after_trigger_frames_present",
+        {"trigger_frame": trigger_frame},
+        len(after),
+        bool(after),
+        f"no frames at or after trigger_frame={trigger_frame}",
+    )
+
+    if frames and after and scenario_type == "vulnerable_actor_intrusion":
+        nearby = [
+            frame
+            for frame in frames
+            if frame.get("frame") is None or abs(int(frame.get("frame")) - trigger_frame) <= 10
+        ]
+        ego_trigger_speeds = numeric_values(nearby or before[-3:] or frames[:3], "ego_speed_mps")
+        append_check(
+            checks,
+            "ego_moving_near_trigger",
+            {"min_max_ego_speed_mps": 1.0, "trigger_frame": trigger_frame},
+            {"max_ego_speed_mps": max(ego_trigger_speeds) if ego_trigger_speeds else None},
+            bool(ego_trigger_speeds and max(ego_trigger_speeds) >= 1.0),
+            "vulnerable_actor_intrusion trigger occurs while ego is stopped",
+        )
+        actor_points = point_values(after, "vulnerable_actor_position") or point_values(after, "primary_actor_position")
+        append_check(
+            checks,
+            "vulnerable_actor_positions_present",
+            "at least 2 vulnerable actor positions after trigger",
+            len(actor_points),
+            len(actor_points) >= 2,
+            "vulnerable actor positions missing after trigger",
+        )
+        motion = max((point_distance(actor_points[0], point) or 0.0 for point in actor_points[1:]), default=0.0)
+        append_check(
+            checks,
+            "vulnerable_actor_moves_after_trigger",
+            {"min_motion_m": 1.0},
+            {"motion_m": motion},
+            motion >= 1.0,
+            "vulnerable actor did not move enough after trigger",
+        )
+        distances = numeric_values(after, "distance_to_ego_m")
+        append_check(
+            checks,
+            "distance_to_ego_present",
+            "distance_to_ego_m exists after trigger",
+            len(distances),
+            bool(distances),
+            "vulnerable actor distance_to_ego_m missing",
+        )
+        append_check(
+            checks,
+            "vulnerable_actor_close_enough",
+            {"max_min_distance_to_ego_m": 8.0},
+            {"min_distance_to_ego_m": min(distances) if distances else None},
+            bool(distances and min(distances) <= 8.0),
+            "vulnerable actor never got close enough to ego",
+        )
+        append_check(
+            checks,
+            "vulnerable_actor_approaches_ego",
+            {"min_approach_delta_m": 0.5},
+            {"approach_delta_m": distances[0] - min(distances) if distances else None},
+            bool(distances and distances[0] - min(distances) >= 0.5),
+            "vulnerable actor did not approach ego after trigger",
+        )
+        laterals = numeric_values(after, "relative_lateral_m")
+        append_check(
+            checks,
+            "relative_lateral_present_after_trigger",
+            "relative_lateral_m exists after trigger",
+            len(laterals),
+            bool(laterals),
+            "vulnerable actor relative_lateral_m missing",
+        )
+        initial_lat = as_float((primary.get("relative_to_ego") or {}).get("lateral_m"), as_float(primary.get("relative_lateral_m")))
+        if initial_lat is not None:
+            append_check(
+                checks,
+                "vulnerable_actor_moves_toward_ego_lane",
+                {"max_abs_lateral_m": max(2.2, abs(initial_lat) - 1.0), "initial_lateral_m": initial_lat},
+                {"min_abs_lateral_m": min(abs(value) for value in laterals) if laterals else None},
+                bool(laterals and min(abs(value) for value in laterals) <= max(2.2, abs(initial_lat) - 1.0)),
+                "vulnerable actor did not move laterally toward ego lane",
+            )
+
+    if frames and after and scenario_type == "front_vehicle_brake":
+        primary_type = str(primary.get("type_id", ""))
+        append_check(
+            checks,
+            "front_brake_primary_is_vehicle",
+            "primary actor type/kind is vehicle",
+            {"type_id": primary.get("type_id"), "kind": primary.get("kind")},
+            primary_type.startswith("vehicle") or primary.get("kind") == "vehicle",
+            "front_vehicle_brake primary actor is not a vehicle",
+        )
+        first = next((frame for frame in frames if frame.get("primary_actor_found")), None)
+        first_long = as_float(first.get("relative_longitudinal_m")) if first else None
+        append_check(
+            checks,
+            "front_vehicle_initially_ahead",
+            "front vehicle initial relative_longitudinal_m > 0",
+            first_long,
+            bool(first and first_long is not None and first_long > 0.0),
+            "front vehicle is not initially ahead of ego",
+        )
+        speeds_after = numeric_values(after, "front_actor_speed_mps")
+        append_check(
+            checks,
+            "front_vehicle_speed_present_after_trigger",
+            "at least 2 front_actor_speed_mps values after trigger",
+            len(speeds_after),
+            len(speeds_after) >= 2,
+            "front vehicle speed missing after trigger",
+        )
+        append_check(
+            checks,
+            "front_vehicle_speed_drop",
+            {"min_speed_drop_mps": 1.0},
+            {"speed_range_mps": max(speeds_after) - min(speeds_after) if speeds_after else None},
+            bool(speeds_after and max(speeds_after) - min(speeds_after) >= 1.0),
+            "front vehicle did not show enough speed drop",
+        )
+
+    if frames and after and scenario_type == "side_vehicle_intrusion":
+        laterals = numeric_values(after, "relative_lateral_m")
+        append_check(
+            checks,
+            "side_vehicle_lateral_present",
+            "relative_lateral_m exists after trigger",
+            len(laterals),
+            bool(laterals),
+            "side vehicle relative_lateral_m missing",
+        )
+        append_check(
+            checks,
+            "side_vehicle_enters_ego_lane",
+            {"max_abs_lateral_m": 2.5},
+            {"min_abs_lateral_m": min(abs(value) for value in laterals) if laterals else None},
+            bool(laterals and min(abs(value) for value in laterals) <= 2.5),
+            "side vehicle did not enter ego lane laterally",
+        )
+
+    report = {
+        "passed": all(check.get("passed") for check in checks),
+        "scenario_type": scenario_type,
+        "check_count": len(checks),
+        "failed_count": sum(1 for check in checks if not check.get("passed")),
+        "checks": checks,
+    }
+    trace["semantic_validation"] = report
+    trace["semantic_validation_passed"] = report["passed"]
+    trace["semantic_validation_failed_reasons"] = fail_reasons(checks)
+    if not report["passed"]:
+        raise RuntimeError("semantic validation failed: " + "; ".join(trace["semantic_validation_failed_reasons"]))
+    return report
 
 
 def postprocess_images(images_dir):
@@ -592,6 +1120,27 @@ def run_scenic_with_repair(args, config_path, primitives_path, scenic_file, imag
             repair_opencode(args, config_path, primitives_path, scenic_file, last_error)
 
 
+def run_scenic_validate_with_repair(args, config_path, primitives_path, scenic_file, images_dir, config, primitives):
+    last_error = ""
+    for attempt in range(args.opencode_repair_attempts + 1):
+        try:
+            run_scenic_capture(args, scenic_file, images_dir)
+            postprocess_images(images_dir)
+            trace = write_event_trace_from_states(images_dir, config, primitives)
+            if args.validate_event_trace:
+                try:
+                    validate_scenario_language_event_trace(config, primitives, trace)
+                finally:
+                    write_json(os.path.join(images_dir, "event_trace.json"), trace)
+            return trace
+        except (subprocess.CalledProcessError, RuntimeError) as exc:
+            last_error = error_text(exc)
+            if attempt >= args.opencode_repair_attempts:
+                raise
+            print(f"\nAsking opencode to repair Scenic file ({attempt + 1}/{args.opencode_repair_attempts}).")
+            repair_opencode(args, config_path, primitives_path, scenic_file, last_error)
+
+
 def execute_chain(args, chain, l0_state, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     config = build_config(
@@ -618,11 +1167,7 @@ def execute_chain(args, chain, l0_state, output_dir):
 
     images_dir = os.path.join(output_dir, "risk_images")
     if args.execute:
-        run_scenic_with_repair(args, workspace_config, workspace_primitives, output_scenic, images_dir)
-        postprocess_images(images_dir)
-        trace = write_event_trace_from_states(images_dir, config, primitives)
-        if args.validate_event_trace and not trace["frames"]:
-            raise RuntimeError("Scenario-language execution produced no event_trace frames.")
+        run_scenic_validate_with_repair(args, workspace_config, workspace_primitives, output_scenic, images_dir, config, primitives)
     else:
         print("Scenario-language execution skipped. Add --execute to run Scenic/CARLA.")
 

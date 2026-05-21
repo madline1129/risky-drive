@@ -10,12 +10,14 @@ Use this skill when asked to generate `generated_risk_scene.scenic` for the Chat
 - Treat `semantic_primitives.json` as the execution plan. It is a constrained primitive graph, not free-form inspiration.
 - Use `semantic_primitives.set_scene_context.map_absolute_path` exactly for `param map = localPath(...)`.
 - Do not use relative map paths like `../maps/Town05.xodr`.
-- Use Scenic 2D coordinate syntax, for example `ego = Car at (-184.435 @ 113.147)`.
+- Use precomputed Scenic fields such as `actor.scenic_position_expression` and `actor.scenic_heading`; do not copy raw CARLA x/y/yaw into Scenic.
 - Do not emit `Point(x, y, z)`, `carla.Location`, `carla.Transform`, or any CARLA Python coordinate object.
-- Use Scenic heading syntax such as `with heading -91.466 deg` or `facing -91.466 deg`.
+- CARLA to Scenic conversion is already done in `semantic_primitives.json`: Scenic x = CARLA x, Scenic y = -CARLA y, Scenic heading = normalize(-(CARLA yaw + 90 deg)).
+- Use Scenic heading syntax such as `with heading 64.232 deg` or `facing 64.232 deg`.
 - Use the configured `scenario_type` exactly. Do not replace the event with a different familiar template.
 - Preserve the primary actor type/kind, relative position to ego, lane relationship, trigger timing, and action.
-- L0 absolute coordinates are best-effort hints. If exact coordinates are awkward in Scenic, use ego-relative positions that preserve the relative geometry.
+- L0 absolute coordinates are best-effort hints. For source L0 actors, prefer `actor.relative_to_ego` and ego-relative Scenic placement that preserves longitudinal/lateral geometry.
+- If exact absolute placement fails, only search same-side alternatives from `actor.relative_to_ego.same_side_search_policy`; never change left to right or right to left.
 - Prefer compact Scenic code that follows existing SafeBench/Scenic examples in `context/scenic_examples.md`.
 - Keep optimizable values as `param` / `Range(...)` only when useful. Avoid unsafe integer ranges for Python `range(...)`; cast to `int(...)` or use fixed integers for loop counts.
 - Do not use `Waypoint.next(-x)` or any CARLA Python API in Scenic code.
@@ -35,7 +37,7 @@ Use this skill when asked to generate `generated_risk_scene.scenic` for the Chat
 - `set_scene_context`: choose map/town and weather-compatible setup.
 - `set_scene_context.coordinate_contract`: obey its coordinate and heading rules.
 - `spawn_ego`: create `ego = Car ...` using `actor.scenic_position_expression`, an ego spawn point, or an ego-relative road point.
-- `spawn_actor_relative`: create a primary/background actor relative to ego or an interaction point.
+- `spawn_actor_relative`: create a primary/background actor relative to ego or an interaction point. If `actor.relative_to_ego.side` is `left`, use `left of`; if it is `right`, use `right of`.
 - `follow_lane`: use `FollowLaneBehavior(...)`.
 - `front_vehicle_brake`: use a behavior that follows/lows speed first, then stops/brakes after trigger.
 - `vulnerable_actor_intrusion`: use a pedestrian/cyclist behavior that crosses toward/through ego lane while ego is moving.

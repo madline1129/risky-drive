@@ -54,6 +54,18 @@ AdvAgent = Pedestrian right of IntPt by globalParameters.OPT_X_DIST,
     with behavior CrossingAdvBehavior()
 ```
 
+When `semantic_primitives.json` gives an L0-relative actor, preserve its side:
+
+```scenic
+PrimaryRefPt = OrientedPoint following roadDirection from egoSpawnPt for 4.849
+
+AdvAgent = Pedestrian left of PrimaryRefPt by 2.93,
+    with heading PrimaryRefPt.heading + 90 deg,
+    with behavior CrossingAdvBehavior()
+```
+
+If `left of PrimaryRefPt by 2.93` is not spawnable, try nearby same-side values such as `left of PrimaryRefPt by 2.43` or `left of PrimaryRefPt by 3.43`; do not switch to `right of`.
+
 ## Front Vehicle Brake Behavior
 
 ```scenic
@@ -76,5 +88,5 @@ If `SetSpeedAction` is unavailable in this Scenic/CARLA setup, use a low `Follow
 - `Range(...)` values can be floats; loop counts used by Python `range(...)` must be integers.
 - Prefer fixed integer wait counts for behavior delays.
 - For pedestrian and vehicle positions, relative placement around `egoSpawnPt` or an interaction point is often more robust than raw CARLA coordinates.
-- If using L0 world coordinates, use Scenic 2D syntax: `Car at (-184.435 @ 113.147), with heading -91.466 deg`.
+- If using L0 world coordinates, use the converted Scenic coordinates supplied by `semantic_primitives.json`; do not convert raw CARLA coordinates yourself.
 - Never use `Point(-184.435, 113.147, 0.089)` in Scenic driving code.
