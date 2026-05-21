@@ -117,7 +117,7 @@ def main():
     parser.add_argument(
         "--l4-backend",
         choices=["safebench-intervention", "code-agent", "scenario-language"],
-        default="code-agent",
+        default="scenario-language",
         help=(
             "L4 execution backend. safebench-intervention replays the original SafeBench scene and perturbs "
             "live actors in-place; code-agent builds a fresh CARLA Python scene; scenario-language uses "

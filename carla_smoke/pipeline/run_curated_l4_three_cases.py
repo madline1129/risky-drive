@@ -629,8 +629,8 @@ def main():
     parser.add_argument(
         "--l4-backend",
         choices=["code-agent", "scenario-language", "safebench-intervention"],
-        default="code-agent",
-        help="Default is code-agent because this curated script is intended to make OpenCode generate L4 risk scenes.",
+        default="scenario-language",
+        help="Default is scenario-language: semantic primitives plus OpenCode-generated Scenic.",
     )
     parser.add_argument("--code-agent", choices=["opencode", "template"], default="opencode")
     parser.add_argument("--town", default="Town05")

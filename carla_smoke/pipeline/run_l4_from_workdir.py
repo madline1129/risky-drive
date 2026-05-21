@@ -57,10 +57,10 @@ def main():
     parser.add_argument(
         "--l4-backend",
         choices=["safebench-intervention", "code-agent", "scenario-language"],
-        default="code-agent",
+        default="scenario-language",
         help=(
-            "Default code-agent builds a fresh CARLA scene with opencode/template. "
-            "Use scenario-language for semantic primitives plus OpenCode-generated Scenic. "
+            "Default scenario-language uses semantic primitives plus OpenCode-generated Scenic. "
+            "Use code-agent to build a fresh CARLA Python scene with opencode/template. "
             "Use safebench-intervention to replay the original SafeBench scene and perturb live actors in-place."
         ),
     )
