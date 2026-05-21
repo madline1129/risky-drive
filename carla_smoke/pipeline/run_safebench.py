@@ -127,7 +127,7 @@ def main():
     parser.add_argument("--validate-event-trace", action="store_true")
     parser.add_argument("--code-agent", choices=["template", "opencode"], default="opencode")
     parser.add_argument("--opencode-bin", default="opencode")
-    parser.add_argument("--opencode-model", default="deepseek-v4-pro")
+    parser.add_argument("--opencode-model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
     parser.add_argument("--skip-plan-agent", action="store_true", help="Skip the L4 PlanAgent and use L3 carla_plan/fallback rules.")
     parser.add_argument("--clean-images", action="store_true")

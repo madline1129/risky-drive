@@ -7,11 +7,13 @@ Use these as syntax references. Do not copy the event blindly.
 ```scenic
 '''A concise scenario description.'''
 Town = 'Town05'
-param map = localPath(f'../maps/{Town}.xodr')
+param map = localPath('/absolute/path/to/safebench/scenario/scenario_data/scenic_data/maps/Town05.xodr')
 param carla_map = Town
 model scenic.simulators.carla.model
 EGO_MODEL = "vehicle.lincoln.mkz_2017"
 ```
+
+Use the exact absolute map path provided in `semantic_primitives.json`; the line above is only a shape example.
 
 ## Ego And Front Vehicle
 
@@ -74,3 +76,5 @@ If `SetSpeedAction` is unavailable in this Scenic/CARLA setup, use a low `Follow
 - `Range(...)` values can be floats; loop counts used by Python `range(...)` must be integers.
 - Prefer fixed integer wait counts for behavior delays.
 - For pedestrian and vehicle positions, relative placement around `egoSpawnPt` or an interaction point is often more robust than raw CARLA coordinates.
+- If using L0 world coordinates, use Scenic 2D syntax: `Car at (-184.435 @ 113.147), with heading -91.466 deg`.
+- Never use `Point(-184.435, 113.147, 0.089)` in Scenic driving code.

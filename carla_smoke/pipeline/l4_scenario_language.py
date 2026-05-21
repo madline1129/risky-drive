@@ -52,21 +52,108 @@ def safe_get(data, *keys, default=None):
     return current if current is not None else default
 
 
+def format_float(value, digits=3):
+    try:
+        text = f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return None
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def scenic_position_2d(location):
+    if not isinstance(location, dict):
+        return None
+    x = format_float(location.get("x"))
+    y = format_float(location.get("y"))
+    if x is None or y is None:
+        return None
+    return f"{x} @ {y}"
+
+
+def scenic_heading(rotation):
+    if not isinstance(rotation, dict):
+        return None
+    yaw = format_float(rotation.get("yaw"))
+    if yaw is None:
+        return None
+    return f"{yaw} deg"
+
+
+def normalize_town_name(source_map):
+    if not source_map:
+        return "Town05"
+    name = os.path.basename(str(source_map))
+    if name.endswith(".xodr"):
+        name = name[:-5]
+    return name or "Town05"
+
+
+def scenic_map_absolute_path(source_map):
+    if source_map and os.path.isabs(str(source_map)) and str(source_map).endswith(".xodr"):
+        return os.path.abspath(str(source_map))
+    town = normalize_town_name(source_map)
+    return os.path.abspath(
+        os.path.join(
+            repo_root_from_this_file(),
+            "safebench",
+            "scenario",
+            "scenario_data",
+            "scenic_data",
+            "maps",
+            f"{town}.xodr",
+        )
+    )
+
+
 def actor_summary(actor):
     if not isinstance(actor, dict):
         return {}
-    return {
+    location = actor.get("location") or actor.get("initial_location")
+    rotation = actor.get("rotation") or actor.get("initial_rotation")
+    position_2d = scenic_position_2d(location)
+    heading = scenic_heading(rotation)
+    summary = {
         "source": actor.get("source"),
         "actor_id": actor.get("actor_id") or actor.get("id"),
         "type_id": actor.get("type_id"),
         "kind": actor.get("kind"),
         "role": actor.get("role") or actor.get("role_name"),
-        "location": actor.get("location") or actor.get("initial_location"),
-        "rotation": actor.get("rotation") or actor.get("initial_rotation"),
+        "location": location,
+        "rotation": rotation,
         "relative_position": actor.get("relative_position"),
         "relative_longitudinal_m": actor.get("relative_longitudinal_m"),
         "relative_lateral_m": actor.get("relative_lateral_m"),
         "distance_m": actor.get("distance_m"),
+    }
+    if position_2d:
+        summary["scenic_position_2d"] = position_2d
+        summary["scenic_position_expression"] = f"({position_2d})"
+    if heading:
+        summary["scenic_heading"] = heading
+    if isinstance(location, dict) and location.get("z") is not None:
+        summary["z_hint_m"] = location.get("z")
+    return summary
+
+
+def scenic_context_from_scene(scene):
+    source_map = scene.get("source_map") or scene.get("preferred_town")
+    town = normalize_town_name(source_map)
+    map_path = scenic_map_absolute_path(source_map)
+    return {
+        "town": town,
+        "map_absolute_path": map_path,
+        "scenic_header": [
+            f"Town = '{town}'",
+            f"param map = localPath({json.dumps(map_path)})",
+            "param carla_map = Town",
+            "model scenic.simulators.carla.model",
+        ],
+        "coordinate_contract": {
+            "world_position_format": "Use Scenic 2D coordinates: actor = Car at (x @ y).",
+            "heading_format": "Use Scenic heading units: with heading yaw deg or facing yaw deg.",
+            "z_policy": "Do not emit Point(x, y, z). Treat L0 z only as metadata/hint.",
+            "relative_geometry": "Prefer ego-relative road points when absolute coordinates are not directly usable.",
+        },
     }
 
 
@@ -85,11 +172,15 @@ def build_semantic_primitives(config):
     ego = actor_summary(scene.get("ego") or {})
     front_actor = actor_summary(scene.get("nearest_front_actor") or {})
     trigger_frame = safe_get(config, "physical_task", "action", "trigger_frame", default=config.get("trigger_frame", 20))
+    scenic_context = scenic_context_from_scene(scene)
 
     primitives = [
         primitive(
             "set_scene_context",
-            town=scene.get("preferred_town") or scene.get("source_map"),
+            town=scenic_context["town"],
+            map_absolute_path=scenic_context["map_absolute_path"],
+            scenic_header=scenic_context["scenic_header"],
+            coordinate_contract=scenic_context["coordinate_contract"],
             weather=scene.get("weather"),
             reconstruction_policy=config.get("reconstruction_policy"),
             spawn_policy=config.get("spawn_policy"),
@@ -227,21 +318,54 @@ def prepare_workspace(args, config_path, primitives_path):
     else:
         write_json(os.path.join(workspace, "l0_state.json"), {})
 
-    seed = """'''OpenCode must replace this seed with a complete Scenic scenario generated from semantic_primitives.json.'''\nTown = 'Town05'\nparam map = localPath(f'../maps/{Town}.xodr')\nparam carla_map = Town\nmodel scenic.simulators.carla.model\nEGO_MODEL = \"vehicle.lincoln.mkz_2017\"\n\n# TODO: implement ego, primary risk actor, and behavior from semantic_primitives.json.\n"""
+    primitives = read_json(primitives_path)
+    context = next(
+        (
+            item
+            for item in primitives.get("semantic_primitives", [])
+            if isinstance(item, dict) and item.get("primitive") == "set_scene_context"
+        ),
+        {},
+    )
+    town = context.get("town") or "Town05"
+    map_path = context.get("map_absolute_path") or scenic_map_absolute_path(town)
+    seed = (
+        "'''OpenCode must replace this seed with a complete Scenic scenario generated from semantic_primitives.json.'''\n"
+        f"Town = {json.dumps(town)}\n"
+        f"param map = localPath({json.dumps(map_path)})\n"
+        "param carla_map = Town\n"
+        "model scenic.simulators.carla.model\n"
+        'EGO_MODEL = "vehicle.lincoln.mkz_2017"\n\n'
+        "# TODO: implement ego, primary risk actor, and behavior from semantic_primitives.json.\n"
+        "# Coordinate rule: use Scenic 2D positions like (-184.435 @ 113.147), never Point(x, y, z).\n"
+    )
     with open(output_scenic, "w", encoding="utf-8") as f:
         f.write(seed)
 
     workspace_skills = os.path.join(workspace, ".opencode", "skills")
-    copy_tree_contents(opencode_skills_dir(), workspace_skills)
+    if os.path.isdir(workspace_skills):
+        shutil.rmtree(workspace_skills)
+    os.makedirs(workspace_skills, exist_ok=True)
+    scenario_language_skill = os.path.join(opencode_skills_dir(), "l4-scenario-language-codegen")
+    shutil.copytree(
+        scenario_language_skill,
+        os.path.join(workspace_skills, "l4-scenario-language-codegen"),
+    )
     references_dir = os.path.join(opencode_skills_dir(), "l4-scenario-language-codegen", "references")
     context_dir = os.path.join(workspace, "context")
+    if os.path.isdir(context_dir):
+        shutil.rmtree(context_dir)
     if os.path.isdir(references_dir):
         copy_tree_contents(references_dir, context_dir)
     with open(os.path.join(workspace, "AGENTS.md"), "w", encoding="utf-8") as f:
         f.write(
             "# OpenCode Workspace Instructions\n\n"
-            "Use the l4-scenario-language-codegen skill.\n"
+            "MANDATORY SKILL: l4-scenario-language-codegen.\n"
+            "Forbidden skills: l4-carla-codegen, l4-safebench-intervention-codegen.\n"
+            "Generate Scenic scenario-language code only; do not generate CARLA Python code.\n"
             "Edit only generated_risk_scene.scenic.\n"
+            "The file must use the absolute map path from semantic_primitives.json.\n"
+            "Use Scenic 2D coordinate syntax such as `at (-184.435 @ 113.147)`, never `Point(x, y, z)`.\n"
             "The file must be executable by Scenic/CARLA.\n"
         )
     write_json(
@@ -257,7 +381,8 @@ def prepare_workspace(args, config_path, primitives_path):
 
 
 def opencode_prompt(config_path, primitives_path, output_scenic):
-    return f"""Use the l4-scenario-language-codegen skill.
+    return f"""MANDATORY SKILL: l4-scenario-language-codegen.
+Forbidden skills: l4-carla-codegen, l4-safebench-intervention-codegen.
 
 Task:
 - Read scenario_config.json:
@@ -271,6 +396,9 @@ Task:
 Requirements:
 - Generate Scenario/Scenic language, not Python.
 - Follow semantic_primitives.json as the hard primitive graph.
+- Use semantic_primitives.set_scene_context.map_absolute_path exactly in `param map = localPath(...)`.
+- Use Scenic 2D position syntax such as `at (-184.435 @ 113.147)`; never emit `Point(x, y, z)`.
+- Use Scenic heading syntax such as `with heading -91.466 deg` or `facing -91.466 deg`.
 - Preserve scenario_config.carla_plan.scenario_type exactly.
 - Preserve primary actor kind/type, ego-relative geometry, action, trigger timing, and forbidden substitutions.
 - L0 absolute coordinates are hints; relative geometry is authoritative.
@@ -282,7 +410,8 @@ Requirements:
 def opencode_repair_prompt(config_path, primitives_path, output_scenic, error_output):
     return f"""The generated Scenic scenario failed during Scenic/CARLA execution.
 
-Use the l4-scenario-language-codegen skill.
+MANDATORY SKILL: l4-scenario-language-codegen.
+Forbidden skills: l4-carla-codegen, l4-safebench-intervention-codegen.
 
 Scenario config:
   {config_path}
@@ -299,6 +428,8 @@ Execution error:
 Repair the Scenic file in place.
 - Keep the same scenario_type and semantic primitive intent.
 - Fix Scenic syntax/runtime issues.
+- Keep `param map = localPath(...)` on the absolute map path from semantic_primitives.json.
+- Replace any `Point(x, y, z)` / CARLA Python coordinate syntax with Scenic 2D `x @ y` syntax.
 - If a parameter used in range(...) can be float, cast it to int(...) or replace it with a fixed integer.
 - Do not switch to Python code.
 - Do not write Markdown. Edit only generated_risk_scene.scenic.
@@ -537,7 +668,7 @@ def main():
     parser.add_argument("--no-execute", dest="execute", action="store_false")
     parser.add_argument("--code-agent", choices=["opencode"], default="opencode")
     parser.add_argument("--opencode-bin", default="opencode")
-    parser.add_argument("--opencode-model", default="deepseek-v4-pro")
+    parser.add_argument("--opencode-model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
     parser.add_argument("--skip-plan-agent", action="store_true")
     parser.add_argument("--plan-model", default=DEFAULT_DEEPSEEK_MODEL)

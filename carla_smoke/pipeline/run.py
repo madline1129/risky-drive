@@ -71,7 +71,7 @@ def main():
     parser.add_argument("--l4-save-every", type=int, default=5)
     parser.add_argument("--code-agent", choices=["template", "opencode"], default="opencode")
     parser.add_argument("--opencode-bin", default="opencode")
-    parser.add_argument("--opencode-model", default="deepseek-v4-pro")
+    parser.add_argument("--opencode-model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
     parser.add_argument("--clean-images", action="store_true", help="Clean old rgb_*.png inside the images directory.")
     args = parser.parse_args()

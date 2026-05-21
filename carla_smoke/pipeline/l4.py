@@ -1604,8 +1604,8 @@ def run_command(command, capture_output=False):
 def normalize_opencode_model_name(model):
     if not model:
         return model
-    if model == "ds-v4-pro":
-        return "deepseek/deepseek-v4-pro"
+    if model == "ds-v4-fast":
+        return "deepseek/ds-v4-fast"
     if "/" in model:
         return model
     if model.startswith("deepseek"):
@@ -2341,7 +2341,7 @@ def main():
     parser.add_argument("--execute", action="store_true", help="Run CARLA executor to produce risk images.")
     parser.add_argument("--code-agent", choices=["template", "opencode"], default="opencode")
     parser.add_argument("--opencode-bin", default="opencode")
-    parser.add_argument("--opencode-model", default="deepseek-v4-pro")
+    parser.add_argument("--opencode-model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--opencode-repair-attempts", type=int, default=REPAIR_ATTEMPTS)
     parser.add_argument("--skip-plan-agent", action="store_true", help="Skip the L4 PlanAgent and use the L3 carla_plan/fallback rules directly.")
     parser.add_argument("--plan-model", default=DEFAULT_DEEPSEEK_MODEL, help="DeepSeek model used by the L4 PlanAgent.")
