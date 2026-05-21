@@ -8,7 +8,7 @@ import urllib.request
 
 
 DEFAULT_DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-DEFAULT_DEEPSEEK_MODEL = "ds-v4-fast"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
 
 
 class DeepSeekError(RuntimeError):

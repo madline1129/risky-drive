@@ -1604,8 +1604,8 @@ def run_command(command, capture_output=False):
 def normalize_opencode_model_name(model):
     if not model:
         return model
-    if model == "ds-v4-fast":
-        return "deepseek/ds-v4-fast"
+    if model == "deepseek-v4-flash":
+        return "deepseek/deepseek-v4-flash"
     if "/" in model:
         return model
     if model.startswith("deepseek"):

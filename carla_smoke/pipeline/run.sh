@@ -11,5 +11,5 @@ python /mnt/data2/whz/risky-drive/carla_smoke/pipeline/l4.py \
     --save-every 5 \
     --code-agent opencode \
     --opencode-bin opencode \
-    --opencode-model ds-v4-fast \
+    --opencode-model deepseek-v4-flash \
     --execute

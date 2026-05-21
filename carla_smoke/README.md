@@ -138,7 +138,7 @@ python carla_smoke/pipeline/run.py \
   --port 2000 \
   --env-file .env \
   --code-agent opencode \
-  --opencode-model ds-v4-fast
+  --opencode-model deepseek-v4-flash
 ```
 
 In this mode, `pipeline/l4.py` creates `opencode_workspace/`, copies reusable skills from `carla_smoke/opencode_skills/` into `.opencode/skills/`, seeds `generated_risk_scene.py`, copies L0 state when available, and calls `opencode run` to edit that script in place. The pipeline then validates the script with `py_compile` and `--help`, allows up to three opencode repair attempts for local validation or execution failures, and executes the generated script to produce `risk_images/`. By default, L4 only requires `risk_rgb_*.png` images after execution; pass `--validate-event-trace` to also check `event_trace.json` structure and numeric event semantics.
