@@ -107,7 +107,7 @@ if [[ -n "$API_KEY" ]]; then
 fi
 
 if [[ "$SEMANTIC_FEEDBACK" == "off" ]]; then
-  CMD+=(--extra-arg "--skip-event-trace-validation")
+  CMD+=("--extra-arg=--skip-event-trace-validation")
 fi
 
 "${CMD[@]}" "${EXTRA_ARGS[@]}"
