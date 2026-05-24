@@ -523,7 +523,7 @@ def build_semantic_primitives(config, l0_state=None):
     }
 
 
-def prepare_workspace(args, task_source_path, primitives_path):
+def prepare_workspace(args, task_source_path, primitives_path, spawn_scenic_path=None):
     workspace = os.path.join(args.output_dir, "opencode_scenario_language_workspace")
     os.makedirs(workspace, exist_ok=True)
     workspace_task = os.path.join(workspace, "l4_task.json")
@@ -548,18 +548,26 @@ def prepare_workspace(args, task_source_path, primitives_path):
     )
     town = context.get("town") or "Town05"
     map_path = context.get("map_absolute_path") or scenic_map_absolute_path(town)
-    seed = (
-        "'''OpenCode must replace this seed with a complete Scenic scenario generated from semantic_primitives.json.'''\n"
-        f"Town = {json.dumps(town)}\n"
-        f"param map = localPath({json.dumps(map_path)})\n"
-        "param carla_map = Town\n"
-        "model scenic.simulators.carla.model\n"
-        'EGO_MODEL = "vehicle.lincoln.mkz_2017"\n\n'
-        "# TODO: implement ego, primary risk actor, and behavior from semantic_primitives.json.\n"
-        "# Coordinate rule: use converted Scenic 2D positions from semantic_primitives.json, never raw CARLA x/y or Point(x, y, z).\n"
-    )
-    with open(output_scenic, "w", encoding="utf-8") as f:
-        f.write(seed)
+    if spawn_scenic_path and os.path.exists(spawn_scenic_path):
+        shutil.copy2(spawn_scenic_path, output_scenic)
+        with open(output_scenic, "a", encoding="utf-8") as f:
+            f.write(
+                "\n# OpenCode: this file starts from the CARLA-validated spawn_check.scenic.\n"
+                "# Preserve ego and primary_actor spawn declarations exactly; add only behavior, timing, and trace-compatible scenario logic.\n"
+            )
+    else:
+        seed = (
+            "'''OpenCode must replace this seed with a complete Scenic scenario generated from semantic_primitives.json.'''\n"
+            f"Town = {json.dumps(town)}\n"
+            f"param map = localPath({json.dumps(map_path)})\n"
+            "param carla_map = Town\n"
+            "model scenic.simulators.carla.model\n"
+            'EGO_MODEL = "vehicle.lincoln.mkz_2017"\n\n'
+            "# TODO: implement ego, primary risk actor, and behavior from semantic_primitives.json.\n"
+            "# Coordinate rule: use converted Scenic 2D positions from semantic_primitives.json, never raw CARLA x/y or Point(x, y, z).\n"
+        )
+        with open(output_scenic, "w", encoding="utf-8") as f:
+            f.write(seed)
 
     workspace_skills = os.path.join(workspace, ".opencode", "skills")
     if os.path.isdir(workspace_skills):
@@ -577,6 +585,7 @@ def prepare_workspace(args, task_source_path, primitives_path):
             "Read l4_task.json as the single business input; semantic_primitives.json is only a primitive trace.\n"
             "Generate Scenic scenario-language code only; do not generate CARLA Python code.\n"
             "Edit only generated_risk_scene.scenic.\n"
+            "generated_risk_scene.scenic starts from a CARLA-validated spawn_check.scenic whenever available; preserve the existing ego/primary_actor spawn lines.\n"
             "The file must use the absolute map path from l4_task.scene_context.map_absolute_path.\n"
             "Use precomputed Scenic 2D coordinates from l4_task; never copy raw CARLA y/yaw directly.\n"
             "When absolute placement fails, preserve actor.relative_to_ego.side and use same_side_search_policy.\n"
@@ -681,6 +690,9 @@ Task:
 
 Requirements:
 - Generate Scenario/Scenic language, not Python.
+- generated_risk_scene.scenic already starts from the CARLA-validated spawn_check.scenic when available.
+- Preserve existing `ego = ...` and `primary_actor = ...` spawn declarations exactly. Do not replace them with `ego offset by`, `left of ego`, `right of ego`, or a newly sampled intersection/lane spawn.
+- Add or edit only behavior/timing declarations and scenario logic needed to realize the action primitive and pass validation.
 - Follow l4_task.actions.action_primitive as the hard action primitive.
 - Use l4_task.scene_context.map_absolute_path exactly in `param map = localPath(...)`.
 - Use the precomputed `actor.scenic_position_expression` and `actor.scenic_heading` from l4_task; never convert raw CARLA x/y/yaw yourself.
@@ -1579,6 +1591,13 @@ def run_spawn_check(args, config, primitives, output_dir):
     return report
 
 
+def spawn_scenic_from_report(spawn_report):
+    if not isinstance(spawn_report, dict):
+        return None
+    path = spawn_report.get("spawn_scenic")
+    return path if path and os.path.exists(path) else None
+
+
 def run_scenic_with_repair(args, task_path, primitives_path, scenic_file, images_dir):
     last_error = ""
     for attempt in range(args.opencode_repair_attempts + 1):
@@ -1740,6 +1759,18 @@ def write_l4_feedback_report(path, config, before_trace=None, feedback_text="", 
         f.write("\n".join(lines).rstrip() + "\n")
 
 
+def run_scenic_image_success(args, scenic_file, images_dir, config, primitives):
+    report_path = os.path.join(os.path.dirname(images_dir), "l4_feedback_report.md")
+    run_scenic_capture(args, scenic_file, images_dir)
+    postprocess_images(images_dir)
+    trace = write_event_trace_from_states(images_dir, config, primitives)
+    trace["semantic_validation_skipped"] = True
+    trace["success_policy"] = "opencode_success_requires_carla_images_only"
+    write_json(os.path.join(images_dir, "event_trace.json"), trace)
+    write_l4_feedback_report(report_path, config, None, [], trace)
+    return trace
+
+
 def run_scenic_validate_with_repair(args, task_path, primitives_path, scenic_file, images_dir, config, primitives):
     report_path = os.path.join(os.path.dirname(task_path), "..", "l4_feedback_report.md")
     report_dir = os.path.dirname(os.path.abspath(report_path))
@@ -1811,12 +1842,20 @@ def execute_chain(args, chain, l0_state, output_dir):
     if args.execute:
         spawn_report = run_spawn_check(args, config, primitives, output_dir)
 
-    workspace, workspace_task, workspace_primitives, output_scenic = prepare_workspace(args, task_source_path, primitives_path)
+    workspace, workspace_task, workspace_primitives, output_scenic = prepare_workspace(
+        args,
+        task_source_path,
+        primitives_path,
+        spawn_scenic_path=spawn_scenic_from_report(spawn_report),
+    )
     run_opencode(args, workspace_task, workspace_primitives, output_scenic)
 
     images_dir = os.path.join(output_dir, "risk_images")
     if args.execute:
-        run_scenic_validate_with_repair(args, workspace_task, workspace_primitives, output_scenic, images_dir, config, primitives)
+        if getattr(args, "validate_event_trace", False):
+            run_scenic_validate_with_repair(args, workspace_task, workspace_primitives, output_scenic, images_dir, config, primitives)
+        else:
+            run_scenic_image_success(args, output_scenic, images_dir, config, primitives)
     else:
         print("Scenario-language execution skipped. Add --execute to run Scenic/CARLA.")
 
