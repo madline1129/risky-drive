@@ -1574,7 +1574,7 @@ def main():
     parser.add_argument("--carla-root", default="/mnt/data2/congfeng/CARLA")
     parser.add_argument("--carla-python", default=None)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=2000)
+    parser.add_argument("--port", type=int, default=2001)
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--scene-sample-attempts", type=int, default=20)
     parser.add_argument("--frames", type=int, default=180)

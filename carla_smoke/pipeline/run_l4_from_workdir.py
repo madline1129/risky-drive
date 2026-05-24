@@ -32,7 +32,7 @@ def main():
     parser.add_argument("--carla-root", default=default_carla_root)
     parser.add_argument("--carla-python", default=None)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=2000)
+    parser.add_argument("--port", type=int, default=2001)
     parser.add_argument("--frames", type=int, default=180)
     parser.add_argument("--save-every", type=int, default=5)
     parser.add_argument("--local-trigger-frame", type=int, default=20)

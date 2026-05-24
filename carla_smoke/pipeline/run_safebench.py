@@ -75,7 +75,7 @@ def main():
         ),
     )
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=2000)
+    parser.add_argument("--port", type=int, default=2001)
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--scenic-dir", default=default_scenic_dir)
     parser.add_argument("--scenic-file", default=None)

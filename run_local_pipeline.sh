@@ -11,10 +11,10 @@ SERVER_SSH_TARGET="${SERVER_SSH_TARGET:-user@server_ip}"
 CARLA_ROOT="${CARLA_ROOT:-/path/to/your/local/CARLA}"
 
 # Tunnel settings:
-#   This forwards local port 2000 to the CARLA server port 2000 on the remote host.
-LOCAL_CARLA_PORT="${LOCAL_CARLA_PORT:-2000}"
+#   This forwards local port 2001 to the CARLA server port 2001 on the remote host.
+LOCAL_CARLA_PORT="${LOCAL_CARLA_PORT:-2001}"
 REMOTE_CARLA_HOST="${REMOTE_CARLA_HOST:-127.0.0.1}"
-REMOTE_CARLA_PORT="${REMOTE_CARLA_PORT:-2000}"
+REMOTE_CARLA_PORT="${REMOTE_CARLA_PORT:-2001}"
 
 # Pipeline settings:
 RUN_ID="${RUN_ID:-local_$(date +%Y%m%d_%H%M%S)}"
