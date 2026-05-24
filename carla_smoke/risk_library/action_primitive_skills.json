@@ -1,0 +1,249 @@
+{
+  "version": "0.1",
+  "description": "Parameter-filling skills for L4 PlanAgent. Each skill defines how to instantiate one action primitive before OpenCode sees it.",
+  "skills": [
+    {
+      "id": "front_vehicle_brake_after_trigger",
+      "actor_role": "front_vehicle",
+      "primary_actor_kinds": ["vehicle"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": 5.0, "max": 35.0, "meaning": "front of ego"},
+        "abs_relative_lateral_m": {"min": 0.0, "max": 2.2, "meaning": "same lane or near same lane"},
+        "must_not_be_behind_ego": true
+      },
+      "required_action_fields": ["front_initial_speed_mps", "target_speed_mps", "brake_intensity", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m"],
+      "parameter_rules": [
+        "direction.longitudinal_m must equal the selected/generated front vehicle relative_longitudinal_m.",
+        "direction.lateral_m must equal the selected/generated front vehicle relative_lateral_m.",
+        "front_initial_speed_mps should use the actor current speed if available, otherwise use 8.0.",
+        "target_speed_mps should be 0.0 for hard brake; brake_intensity should be 1.0."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 14.0,
+        "relative_lateral_m": 0.0,
+        "kind": "vehicle",
+        "type_id": "vehicle.nissan.micra"
+      }
+    },
+    {
+      "id": "front_vehicle_slow_or_stop",
+      "actor_role": "front_vehicle",
+      "primary_actor_kinds": ["vehicle"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": 5.0, "max": 35.0, "meaning": "front of ego"},
+        "abs_relative_lateral_m": {"min": 0.0, "max": 2.2, "meaning": "same lane or near same lane"},
+        "must_not_be_behind_ego": true
+      },
+      "required_action_fields": ["target_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m"],
+      "parameter_rules": [
+        "Use a low target speed between 0.0 and 2.0 m/s.",
+        "Keep lateral direction at 0.0 relative to the lane."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 12.0,
+        "relative_lateral_m": 0.0,
+        "kind": "vehicle",
+        "type_id": "vehicle.nissan.micra"
+      }
+    },
+    {
+      "id": "vru_cross_lateral_into_path",
+      "actor_role": "vulnerable_actor",
+      "primary_actor_kinds": ["pedestrian", "walker", "cyclist"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": 4.0, "max": 20.0, "meaning": "front or near-front of ego"},
+        "abs_relative_lateral_m": {"min": 1.5, "max": 6.0, "meaning": "left/right side of ego lane"},
+        "must_not_be_behind_ego": true
+      },
+      "required_action_fields": ["initial_speed_mps", "crossing_speed_mps", "target_relative_lateral_m", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m"],
+      "parameter_rules": [
+        "Do not select an L0 pedestrian behind ego for a forward crossing event.",
+        "direction.longitudinal_m must be positive and match the primary actor relative_longitudinal_m.",
+        "direction.lateral_m must match the primary actor relative_lateral_m and preserve left/right side.",
+        "target_relative_lateral_m should be 0.0 for entering ego lane.",
+        "crossing_speed_mps should usually be 1.2 to 2.0."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 10.0,
+        "relative_lateral_m": -3.5,
+        "kind": "pedestrian",
+        "type_id": "walker.pedestrian.0012"
+      }
+    },
+    {
+      "id": "vru_move_longitudinal_in_path",
+      "actor_role": "vulnerable_actor",
+      "primary_actor_kinds": ["pedestrian", "walker", "cyclist"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": 4.0, "max": 20.0, "meaning": "in ego path ahead"},
+        "abs_relative_lateral_m": {"min": 0.0, "max": 2.5, "meaning": "inside or near ego lane"},
+        "must_not_be_behind_ego": true
+      },
+      "required_action_fields": ["speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m"],
+      "parameter_rules": [
+        "Use positive forward or conflict-point-directed speed.",
+        "The actor must start ahead or near-ahead, not behind ego."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 9.0,
+        "relative_lateral_m": 0.5,
+        "kind": "pedestrian",
+        "type_id": "walker.pedestrian.0012"
+      }
+    },
+    {
+      "id": "vru_emerge_from_occlusion_into_path",
+      "actor_role": "vulnerable_actor",
+      "primary_actor_kinds": ["pedestrian", "walker", "cyclist"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": 4.0, "max": 25.0, "meaning": "front or near-front of ego"},
+        "abs_relative_lateral_m": {"min": 1.5, "max": 7.0, "meaning": "occluded side of ego lane"},
+        "must_not_be_behind_ego": true
+      },
+      "required_action_fields": ["emerge_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m"],
+      "parameter_rules": [
+        "Preserve the occluded side from L3/L0.",
+        "The actor should emerge from the side into ego path, so target lateral is near 0.0."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 10.0,
+        "relative_lateral_m": -4.0,
+        "kind": "pedestrian",
+        "type_id": "walker.pedestrian.0012"
+      }
+    },
+    {
+      "id": "side_vehicle_cut_in_to_ego_lane",
+      "actor_role": "side_vehicle",
+      "primary_actor_kinds": ["vehicle"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": -5.0, "max": 25.0, "meaning": "side-front or adjacent to ego"},
+        "abs_relative_lateral_m": {"min": 2.0, "max": 6.0, "meaning": "neighboring lane"},
+        "must_be_side_actor": true
+      },
+      "required_action_fields": ["lateral_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m", "target_relative_lateral_m"],
+      "parameter_rules": [
+        "direction.lateral_m must preserve the side vehicle's original side.",
+        "target_relative_lateral_m should move toward 0.0."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 8.0,
+        "relative_lateral_m": 3.5,
+        "kind": "vehicle",
+        "type_id": "vehicle.tesla.model3"
+      }
+    },
+    {
+      "id": "side_vehicle_drift_toward_ego_lane",
+      "actor_role": "side_vehicle",
+      "primary_actor_kinds": ["vehicle"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": -5.0, "max": 25.0, "meaning": "side-front or adjacent to ego"},
+        "abs_relative_lateral_m": {"min": 2.0, "max": 6.0, "meaning": "neighboring lane"},
+        "must_be_side_actor": true
+      },
+      "required_action_fields": ["lateral_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m", "target_relative_lateral_m"],
+      "parameter_rules": [
+        "Use a slow lateral drift, typically 0.3 to 0.8 m/s.",
+        "Do not place the vehicle already in ego lane."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 8.0,
+        "relative_lateral_m": 3.5,
+        "kind": "vehicle",
+        "type_id": "vehicle.tesla.model3"
+      }
+    },
+    {
+      "id": "static_obstacle_blocking_path",
+      "actor_role": "road_obstacle",
+      "primary_actor_kinds": ["obstacle", "static", "vehicle"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": 4.0, "max": 20.0, "meaning": "blocking ego path ahead"},
+        "abs_relative_lateral_m": {"min": 0.0, "max": 2.5, "meaning": "inside or near ego lane"},
+        "must_not_be_behind_ego": true
+      },
+      "required_action_fields": ["speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m"],
+      "parameter_rules": [
+        "speed_mps must be 0.0.",
+        "The obstacle should block ego path ahead."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 10.0,
+        "relative_lateral_m": 0.0,
+        "kind": "obstacle",
+        "type_id": "static.prop.warningconstruction"
+      }
+    },
+    {
+      "id": "cargo_drop_or_slide_into_path",
+      "actor_role": "payload",
+      "primary_actor_kinds": ["payload", "cargo", "object", "vehicle"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": 5.0, "max": 35.0, "meaning": "ahead of ego"},
+        "abs_relative_lateral_m": {"min": 0.0, "max": 3.5, "meaning": "near ego path"},
+        "must_not_be_behind_ego": true
+      },
+      "required_action_fields": ["speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m"],
+      "parameter_rules": [
+        "Payload should start ahead or on a front vehicle, then move into ego path.",
+        "Do not start behind ego."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 15.0,
+        "relative_lateral_m": 0.5,
+        "kind": "payload",
+        "type_id": "static.prop.box01"
+      }
+    },
+    {
+      "id": "ego_continue_without_braking",
+      "actor_role": "ego",
+      "primary_actor_kinds": ["ego"],
+      "spawn_semantics": {},
+      "required_action_fields": ["trigger_frame"],
+      "parameter_rules": ["Ego is already spawned by L0; do not create another ego actor."]
+    },
+    {
+      "id": "ego_late_or_insufficient_braking",
+      "actor_role": "ego",
+      "primary_actor_kinds": ["ego"],
+      "spawn_semantics": {},
+      "required_action_fields": ["trigger_frame"],
+      "parameter_rules": ["Ego is already spawned by L0; use hazard actor as primary object when scenario_type is ego_action_risk."]
+    },
+    {
+      "id": "vehicle_maintain_current_speed",
+      "actor_role": "vehicle",
+      "primary_actor_kinds": ["vehicle"],
+      "spawn_semantics": {},
+      "required_action_fields": ["target_speed_mps_source"],
+      "parameter_rules": ["For background vehicles, preserve current speed and lane; this should not drive the primary event."]
+    },
+    {
+      "id": "vru_remain_stationary",
+      "actor_role": "vulnerable_actor",
+      "primary_actor_kinds": ["pedestrian", "walker", "cyclist"],
+      "spawn_semantics": {},
+      "required_action_fields": ["speed_mps"],
+      "parameter_rules": ["For background VRUs, speed_mps must be 0.0; this should not drive the primary event."]
+    },
+    {
+      "id": "actor_remain_stationary",
+      "actor_role": "background_actor",
+      "primary_actor_kinds": ["obstacle", "static", "vehicle", "pedestrian"],
+      "spawn_semantics": {},
+      "required_action_fields": ["speed_mps"],
+      "parameter_rules": ["For static background actors, speed_mps must be 0.0; this should not drive the primary event."]
+    }
+  ]
+}

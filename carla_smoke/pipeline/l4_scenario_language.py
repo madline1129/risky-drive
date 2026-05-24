@@ -110,6 +110,54 @@ def carla_to_scenic_heading(rotation):
     return f"{format_float(scenic_heading_deg)} deg"
 
 
+def relative_carla_location_from_ego(ego, relative_longitudinal_m, relative_lateral_m, z_hint=None):
+    ego_location = ego.get("location") if isinstance(ego, dict) else None
+    ego_rotation = ego.get("rotation") if isinstance(ego, dict) else None
+    if not isinstance(ego_location, dict) or not isinstance(ego_rotation, dict):
+        return None
+    ego_x = as_float(ego_location.get("x"))
+    ego_y = as_float(ego_location.get("y"))
+    ego_z = as_float(ego_location.get("z"), 0.0)
+    ego_yaw = as_float(ego_rotation.get("yaw"))
+    rel_long = as_float(relative_longitudinal_m)
+    rel_lat = as_float(relative_lateral_m)
+    if None in (ego_x, ego_y, ego_yaw, rel_long, rel_lat):
+        return None
+    yaw_rad = math.radians(ego_yaw)
+    forward_x = math.cos(yaw_rad)
+    forward_y = math.sin(yaw_rad)
+    right_x = math.cos(yaw_rad + math.pi / 2.0)
+    right_y = math.sin(yaw_rad + math.pi / 2.0)
+    return {
+        "x": round(ego_x + rel_long * forward_x + rel_lat * right_x, 3),
+        "y": round(ego_y + rel_long * forward_y + rel_lat * right_y, 3),
+        "z": round(as_float(z_hint, ego_z), 3),
+    }
+
+
+def generated_actor_with_pose(actor, ego):
+    if not isinstance(actor, dict):
+        return actor
+    if actor.get("source") != "generated_object":
+        return actor
+    if isinstance(actor.get("location"), dict):
+        return actor
+    location = relative_carla_location_from_ego(
+        ego,
+        actor.get("relative_longitudinal_m"),
+        actor.get("relative_lateral_m"),
+        actor.get("z_hint_m", 0.7 if str(actor.get("kind") or "").lower() in {"pedestrian", "walker", "cyclist"} else None),
+    )
+    if not location:
+        return actor
+    ego_rotation = ego.get("rotation") if isinstance(ego, dict) else {}
+    generated = dict(actor)
+    generated["location"] = location
+    generated.setdefault("rotation", {"pitch": 0.0, "yaw": as_float((ego_rotation or {}).get("yaw"), 0.0), "roll": 0.0})
+    generated.setdefault("distance_m", math.sqrt((as_float(actor.get("relative_longitudinal_m"), 0.0) or 0.0) ** 2 + (as_float(actor.get("relative_lateral_m"), 0.0) or 0.0) ** 2))
+    return generated
+
+
 def relative_to_ego_summary(actor):
     rel_long = as_float(
         actor.get("relative_longitudinal_m", actor.get("initial_relative_longitudinal_m")),
@@ -313,8 +361,10 @@ def nearest_front_actor_from_l0(l0_state):
 def build_semantic_primitives(config, l0_state=None):
     l0_state = l0_state or {}
     scenario_type = config.get("scenario_type", "unknown")
-    primary_actor = actor_summary(config.get("primary_actor") or {})
-    ego = actor_summary((l0_state or {}).get("ego") or {})
+    ego_source = (l0_state or {}).get("ego") or {}
+    primary_source = generated_actor_with_pose(config.get("primary_actor") or {}, ego_source)
+    primary_actor = actor_summary(primary_source)
+    ego = actor_summary(ego_source)
     front_actor = actor_summary(nearest_front_actor_from_l0(l0_state))
     trigger_frame = int(config.get("trigger_frame", 20) or 20)
     scenic_context = scenic_context_from_l0(l0_state)
@@ -1310,12 +1360,14 @@ def run_scenic_capture(args, scenic_file, images_dir):
         "--weather",
         args.weather,
         "--camera-mode",
-        "surround",
+        "front" if getattr(args, "no_save_images", False) else "surround",
         "--output-dir",
         images_dir,
         "--clean-output",
         "--no-try-next-on-failure",
     ]
+    if getattr(args, "no_save_images", False):
+        command.append("--no-save-images")
     run_command(command, capture_output=True)
 
 
@@ -1397,9 +1449,10 @@ def write_text(path, text):
 
 def spawn_check_args(args):
     copied = argparse.Namespace(**vars(args))
-    copied.frames = int(getattr(args, "spawn_check_frames", 8) or 8)
+    copied.frames = int(getattr(args, "spawn_check_frames", 1) or 1)
     copied.save_every = int(getattr(args, "spawn_check_save_every", 1) or 1)
-    copied.warmup_ticks = min(int(getattr(args, "warmup_ticks", 0) or 0), 2)
+    copied.warmup_ticks = min(int(getattr(args, "warmup_ticks", 0) or 0), 1)
+    copied.no_save_images = True
     return copied
 
 
@@ -1453,25 +1506,39 @@ def run_spawn_check(args, config, primitives, output_dir):
         return None
     check_dir = os.path.join(output_dir, "spawn_check")
     scenic_path = os.path.join(check_dir, "spawn_check.scenic")
-    images_dir = os.path.join(check_dir, "images")
+    state_dir = os.path.join(check_dir, "state")
     report_path = os.path.join(check_dir, "spawn_check_report.json")
+    parameter_report_path = os.path.join(check_dir, "spawn_parameter_check_report.json")
+    os.makedirs(check_dir, exist_ok=True)
+    parameter_check = config.get("spawn_parameter_check") or {
+        "kind": "plan_spawn_parameter_check",
+        "passed": True,
+        "reason": "no spawn parameter check was attached",
+    }
+    write_json(parameter_report_path, parameter_check)
+    if not parameter_check.get("passed"):
+        report = {
+            "kind": "spawn_check",
+            "passed": False,
+            "parameter_report": os.path.abspath(parameter_report_path),
+            "carla_spawn_attempted": False,
+            "note": "PlanAgent action-primitive spawn parameters failed before CARLA spawn validation.",
+        }
+        write_json(report_path, report)
+        raise RuntimeError(f"spawn parameter check failed: {parameter_check.get('reason', parameter_check)}")
+
     write_spawn_check_scenic(config, primitives, scenic_path)
-    run_scenic_capture(spawn_check_args(args), scenic_path, images_dir)
-    postprocess_images(images_dir)
+    run_scenic_capture(spawn_check_args(args), scenic_path, state_dir)
     report = {
         "kind": "spawn_check",
         "passed": True,
+        "parameter_report": os.path.abspath(parameter_report_path),
+        "carla_spawn_attempted": True,
         "spawn_scenic": os.path.abspath(scenic_path),
-        "images_dir": os.path.abspath(images_dir),
-        "note": "CARLA accepted the spawn-only Scenic file.",
+        "state_dir": os.path.abspath(state_dir),
+        "note": "CARLA accepted the spawn-only Scenic file. No images are saved; this gate only checks spawn legality before OpenCode.",
     }
     write_json(report_path, report)
-    if getattr(args, "spawn_semantic_check", True):
-        semantic_report_path = os.path.join(check_dir, "spawn_semantic_report.json")
-        semantic_report = run_spawn_semantic_check(args, config, primitives, images_dir, semantic_report_path)
-        report["semantic_report"] = os.path.abspath(semantic_report_path)
-        report["semantic_passed"] = bool((semantic_report.get("result") or {}).get("passed"))
-        write_json(report_path, report)
     return report
 
 
@@ -1761,7 +1828,7 @@ def main():
     parser.add_argument("--no-spawn-check", dest="spawn_check", action="store_false")
     parser.add_argument("--spawn-semantic-check", dest="spawn_semantic_check", action="store_true", default=True)
     parser.add_argument("--no-spawn-semantic-check", dest="spawn_semantic_check", action="store_false")
-    parser.add_argument("--spawn-check-frames", type=int, default=8)
+    parser.add_argument("--spawn-check-frames", type=int, default=1)
     parser.add_argument("--spawn-check-save-every", type=int, default=1)
     parser.add_argument("--opencode-bin", default="opencode")
     parser.add_argument("--opencode-model", default=DEFAULT_DEEPSEEK_MODEL)
@@ -1772,6 +1839,7 @@ def main():
     parser.add_argument("--api-key", default=None, help="Explicit API key. Prefer .env/API_KEY_ENV for shared runs.")
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--plan-timeout", type=float, default=300.0)
+    parser.add_argument("--plan-feedback-attempts", type=int, default=1)
     parser.add_argument("--validate-event-trace", action="store_true")
     args = parser.parse_args()
 

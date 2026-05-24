@@ -249,6 +249,35 @@
       "direction_policy": "follow_lane_toward_hazard",
       "stop_condition": "late_brake_or_timeout",
       "acceptance_checks": ["ego_moving_near_trigger", "distance_to_hazard_decreases"]
+    },
+    {
+      "id": "vehicle_maintain_current_speed",
+      "controlled_actor_role": "vehicle",
+      "motion_frame": "lane_following",
+      "speed_mps_source": "current_actor_speed_mps",
+      "target_speed_mps_source": "current_actor_speed_mps",
+      "brake_intensity": 0.0,
+      "direction": {"frame": "actor_lane", "longitudinal_direction": "forward", "lateral_mps": 0.0, "heading_delta_deg": 0.0},
+      "stop_condition": "timeout",
+      "acceptance_checks": ["background_vehicle_preserved", "vehicle_keeps_lane"]
+    },
+    {
+      "id": "vru_remain_stationary",
+      "controlled_actor_role": "vulnerable_actor",
+      "motion_frame": "world",
+      "speed_mps": 0.0,
+      "direction": {"frame": "world", "longitudinal_mps": 0.0, "lateral_mps": 0.0, "heading_delta_deg": 0.0},
+      "stop_condition": "timeout",
+      "acceptance_checks": ["background_vru_preserved", "actor_motion_near_zero"]
+    },
+    {
+      "id": "actor_remain_stationary",
+      "controlled_actor_role": "background_actor",
+      "motion_frame": "world",
+      "speed_mps": 0.0,
+      "direction": {"frame": "world", "longitudinal_mps": 0.0, "lateral_mps": 0.0, "heading_delta_deg": 0.0},
+      "stop_condition": "timeout",
+      "acceptance_checks": ["background_actor_preserved", "actor_motion_near_zero"]
     }
   ]
 }

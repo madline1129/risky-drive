@@ -35,6 +35,11 @@ PLAN_AGENT_PROMPT_TEMPLATE = """你是 L4 PlanAgent。
 - 不改写 L3 的核心事件。
 - 如果 L3 已经给出 risk_type_id / primary_trigger_action_id / action_primitives，必须优先沿用；你的任务是把这些动作原语实例化为具体参数，不要自由发明 action.mode。
 - L3 不负责选择完整物体或出生地点；你必须根据 L0 actors、L3 chain_participants 和 action_primitives 选择 primary_object，并保留所选 L0 actor 的 actor_id、type_id、kind、location、rotation、relative_longitudinal_m、relative_lateral_m。
+- 你必须严格按 active_action_primitive_skill 填参数，尤其是 spawn_semantics、required_action_fields、parameter_rules。
+- 只有当 L0 actor 满足 active_action_primitive_skill.spawn_semantics 时，才能把 primary_object.source 写成 l0_actor。
+- 如果没有 L0 actor 满足出生位置语义，必须使用 primary_object.source="generated_object"，并直接给出 kind、type_id、relative_position、relative_longitudinal_m、relative_lateral_m；不要硬选一个不合语义的 L0 actor。
+- action_primitive.direction.longitudinal_m / lateral_m 必须和 primary_object 的 relative_longitudinal_m / relative_lateral_m 一致。
+- 对 vru_cross_lateral_into_path 这类“进入自车前方车道”的动作，主对象不能在自车后方；relative_longitudinal_m 必须为正且满足 skill 范围。
 - scenario_type 只能是：front_vehicle_brake, cargo_drop, vulnerable_actor_intrusion, road_obstacle_intrusion, side_vehicle_intrusion, ego_action_risk。
 - 只输出 JSON，不要 Markdown。
 
@@ -51,6 +56,10 @@ PLAN_AGENT_PROMPT_TEMPLATE = """你是 L4 PlanAgent。
     "actor_id": 123,
     "kind": "vehicle/pedestrian/obstacle/payload",
     "role": "front_vehicle",
+    "type_id": "vehicle.nissan.micra",
+    "relative_position": "front/front-left/front-right/left/right",
+    "relative_longitudinal_m": 14.0,
+    "relative_lateral_m": 0.0,
     "must_drive_primary_event": true,
     "selection_reason": "引用 L0/L3 字段说明"
   },
@@ -95,6 +104,47 @@ def repo_root_from_this_file():
 
 def opencode_skills_dir():
     return os.path.join(repo_root_from_this_file(), "carla_smoke", "opencode_skills")
+
+
+def action_primitive_skills_path():
+    return os.path.join(repo_root_from_this_file(), "carla_smoke", "risk_library", "action_primitive_skills.json")
+
+
+def load_action_primitive_skills():
+    return read_json(action_primitive_skills_path())
+
+
+def action_primitive_skill_by_id(action_primitive_id, skills_library=None):
+    if not action_primitive_id:
+        return {}
+    skills_library = skills_library or load_action_primitive_skills()
+    for item in skills_library.get("skills", []):
+        if isinstance(item, dict) and item.get("id") == action_primitive_id:
+            return item
+    return {}
+
+
+def action_primitive_skills_for_chain(chain, primary_primitive_id=None):
+    skills_library = load_action_primitive_skills()
+    wanted_ids = []
+    if primary_primitive_id:
+        wanted_ids.append(primary_primitive_id)
+    for item in chain.get("action_primitives") or []:
+        if not isinstance(item, dict):
+            continue
+        action_id = item.get("action_primitive_id") or item.get("action_id") or item.get("id")
+        if action_id:
+            wanted_ids.append(action_id)
+    skills = []
+    seen = set()
+    for action_id in wanted_ids:
+        if action_id in seen:
+            continue
+        seen.add(action_id)
+        skill = action_primitive_skill_by_id(action_id, skills_library)
+        if skill:
+            skills.append(skill)
+    return skills
 
 
 def select_chain(chains_data, index):
@@ -187,10 +237,12 @@ def compact_l0_for_prompt(l0_state):
     }
 
 
-def build_l4_plan_agent_prompt(chain, l0_state):
+def build_l4_plan_agent_prompt(chain, l0_state, feedback=None):
     risk_type = risk_type_by_id(chain.get("risk_type_id")) or {}
     primitive_id = chain.get("primary_trigger_action_id") or risk_type.get("primary_action_primitive_id")
     action_primitive = action_primitive_by_id(primitive_id) or {}
+    action_skills = action_primitive_skills_for_chain(chain, primitive_id)
+    active_skill = action_primitive_skill_by_id(primitive_id) or {}
     payload = {
         "l3_chain": chain,
         "l0_state": compact_l0_for_prompt(l0_state),
@@ -203,12 +255,16 @@ def build_l4_plan_agent_prompt(chain, l0_state):
             "l3_action_primitives": chain.get("action_primitives") or [],
             "participant_actions": chain.get("participant_actions") or [],
         },
+        "active_action_primitive_skill": active_skill,
+        "available_action_primitive_skills": action_skills,
     }
+    if feedback:
+        payload["previous_plan_feedback"] = feedback
     return PLAN_AGENT_PROMPT_TEMPLATE + "\n\n输入 JSON：\n" + json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def run_l4_plan_agent(args, chain, l0_state):
-    prompt = build_l4_plan_agent_prompt(chain, l0_state)
+def run_l4_plan_agent(args, chain, l0_state, feedback=None):
+    prompt = build_l4_plan_agent_prompt(chain, l0_state, feedback=feedback)
     api_key = get_api_key(args.api_key_env, args.env_file, getattr(args, "api_key", None))
     raw_response = chat_json(args.plan_url, args.plan_model, api_key, prompt, args.plan_timeout)
     return parse_json_response(raw_response), raw_response
@@ -394,20 +450,220 @@ def event_contract(scenario_type, success_criteria):
     }
 
 
-def build_config(
-    chain,
-    l0_state=None,
-    l0_json_path=None,
-    l4_frames=140,
-    local_trigger_frame=20,
-    pre_trigger_seconds=2.0,
-    source_timestep=0.05,
-    plan_agent_args=None,
-):
-    if plan_agent_args is None:
-        raise ValueError("L4 requires PlanAgent args; deterministic fallback is disabled.")
+def normalized_actor_kind(actor):
+    kind = str((actor or {}).get("kind") or "").lower()
+    type_id = str((actor or {}).get("type_id") or "").lower()
+    if kind:
+        return kind
+    if type_id.startswith("walker."):
+        return "pedestrian"
+    if type_id.startswith("vehicle."):
+        return "vehicle"
+    if type_id.startswith("static."):
+        return "static"
+    return ""
 
-    plan_output, raw_response = run_l4_plan_agent(plan_agent_args, chain, l0_state or {})
+
+def kind_allowed(actual_kind, allowed_kinds):
+    if not allowed_kinds:
+        return True
+    actual = str(actual_kind or "").lower()
+    for item in allowed_kinds:
+        item = str(item).lower()
+        if actual == item:
+            return True
+        if item == "walker" and actual == "pedestrian":
+            return True
+        if item == "pedestrian" and actual == "walker":
+            return True
+        if item == "vehicle" and actual in {"car", "truck", "bus", "motorcycle"}:
+            return True
+        if item == "static" and actual in {"obstacle", "prop"}:
+            return True
+        if item == "obstacle" and actual in {"static", "prop"}:
+            return True
+    return False
+
+
+def nested_value(data, path):
+    current = data
+    for part in str(path).split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def actor_relative_longitudinal(primary_actor, action_primitive):
+    return as_float(
+        primary_actor.get("relative_longitudinal_m") if isinstance(primary_actor, dict) else None,
+        as_float(nested_value(action_primitive, "direction.longitudinal_m")),
+    )
+
+
+def actor_relative_lateral(primary_actor, action_primitive):
+    return as_float(
+        primary_actor.get("relative_lateral_m") if isinstance(primary_actor, dict) else None,
+        as_float(nested_value(action_primitive, "direction.lateral_m")),
+    )
+
+
+def check_numeric_range(checks, name, value, spec):
+    if not isinstance(spec, dict) or not spec:
+        return
+    passed = True
+    reasons = []
+    minimum = as_float(spec.get("min"))
+    maximum = as_float(spec.get("max"))
+    if value is None:
+        passed = False
+        reasons.append("missing")
+    else:
+        if minimum is not None and value < minimum:
+            passed = False
+            reasons.append(f"{value:.3f} < min {minimum:.3f}")
+        if maximum is not None and value > maximum:
+            passed = False
+            reasons.append(f"{value:.3f} > max {maximum:.3f}")
+    checks.append(
+        {
+            "name": name,
+            "passed": passed,
+            "target": spec,
+            "actual": value,
+            "reason": "; ".join(reasons) if reasons else "ok",
+        }
+    )
+
+
+def validate_plan_spawn_parameters(config):
+    primitive_id = config.get("primary_action_primitive_id")
+    skill = action_primitive_skill_by_id(primitive_id)
+    primary_actor = config.get("primary_actor") or {}
+    action_primitive = config.get("action_primitive") or {}
+    spawn_semantics = skill.get("spawn_semantics") if isinstance(skill, dict) else {}
+    checks = []
+
+    actual_kind = normalized_actor_kind(primary_actor)
+    allowed_kinds = skill.get("primary_actor_kinds") or []
+    checks.append(
+        {
+            "name": "primary_actor_kind",
+            "passed": kind_allowed(actual_kind, allowed_kinds),
+            "target": allowed_kinds,
+            "actual": actual_kind,
+            "reason": "ok" if kind_allowed(actual_kind, allowed_kinds) else "primary actor kind does not match action primitive skill",
+        }
+    )
+
+    rel_long = actor_relative_longitudinal(primary_actor, action_primitive)
+    rel_lat = actor_relative_lateral(primary_actor, action_primitive)
+    if isinstance(spawn_semantics, dict):
+        check_numeric_range(checks, "relative_longitudinal_m", rel_long, spawn_semantics.get("relative_longitudinal_m"))
+        check_numeric_range(
+            checks,
+            "abs_relative_lateral_m",
+            abs(rel_lat) if rel_lat is not None else None,
+            spawn_semantics.get("abs_relative_lateral_m"),
+        )
+        if spawn_semantics.get("must_not_be_behind_ego"):
+            checks.append(
+                {
+                    "name": "must_not_be_behind_ego",
+                    "passed": rel_long is not None and rel_long >= 0.0,
+                    "target": "relative_longitudinal_m >= 0",
+                    "actual": rel_long,
+                    "reason": "ok" if rel_long is not None and rel_long >= 0.0 else "primary actor is behind ego",
+                }
+            )
+        if spawn_semantics.get("must_be_side_actor"):
+            checks.append(
+                {
+                    "name": "must_be_side_actor",
+                    "passed": rel_lat is not None and abs(rel_lat) >= 1.5,
+                    "target": "abs(relative_lateral_m) >= 1.5",
+                    "actual": rel_lat,
+                    "reason": "ok" if rel_lat is not None and abs(rel_lat) >= 1.5 else "primary actor is not on a side lane",
+                }
+            )
+
+    direction_long = as_float(nested_value(action_primitive, "direction.longitudinal_m"))
+    direction_lat = as_float(nested_value(action_primitive, "direction.lateral_m"))
+    if rel_long is not None and direction_long is not None:
+        checks.append(
+            {
+                "name": "direction_longitudinal_matches_primary_actor",
+                "passed": abs(rel_long - direction_long) <= 0.5,
+                "target": rel_long,
+                "actual": direction_long,
+                "reason": "ok" if abs(rel_long - direction_long) <= 0.5 else "direction.longitudinal_m does not match primary actor",
+            }
+        )
+    if rel_lat is not None and direction_lat is not None:
+        checks.append(
+            {
+                "name": "direction_lateral_matches_primary_actor",
+                "passed": abs(rel_lat - direction_lat) <= 0.5,
+                "target": rel_lat,
+                "actual": direction_lat,
+                "reason": "ok" if abs(rel_lat - direction_lat) <= 0.5 else "direction.lateral_m does not match primary actor",
+            }
+        )
+
+    for field in skill.get("required_action_fields") or []:
+        value = nested_value(action_primitive, field)
+        checks.append(
+            {
+                "name": f"required_action_field:{field}",
+                "passed": value is not None,
+                "target": "present",
+                "actual": value,
+                "reason": "ok" if value is not None else "missing required action primitive field",
+            }
+        )
+
+    passed = all(check.get("passed") for check in checks)
+    failed = [check for check in checks if not check.get("passed")]
+    return {
+        "kind": "plan_spawn_parameter_check",
+        "passed": passed,
+        "action_primitive_id": primitive_id,
+        "skill": skill,
+        "primary_actor": primary_actor,
+        "action_primitive": action_primitive,
+        "checks": checks,
+        "failed_checks": failed,
+        "reason": "ok" if passed else "; ".join(f"{item['name']}: {item.get('reason')}" for item in failed),
+    }
+
+
+def plan_feedback_from_spawn_check(check):
+    skill = check.get("skill") or {}
+    return {
+        "kind": "plan_spawn_parameter_feedback",
+        "message": "上一次 L4 PlanAgent 输出的动作原语出生地/参数语义检查失败。必须修正 primary_object 和 action_primitive 后重新输出完整 L4Plan JSON。",
+        "failed_checks": check.get("failed_checks") or [],
+        "active_action_primitive_skill": skill,
+        "repair_rules": [
+            "Do not keep an l0_actor if it violates spawn_semantics.",
+            "If no L0 actor satisfies the skill, use primary_object.source='generated_object' and fill relative_longitudinal_m/relative_lateral_m from fallback_when_no_l0_actor_matches.",
+            "Make action_primitive.direction.longitudinal_m/lateral_m match primary_object relative_longitudinal_m/relative_lateral_m.",
+            "For front/crossing hazards, do not place the primary actor behind ego.",
+        ],
+    }
+
+
+def config_from_plan_output(
+    chain,
+    plan_output,
+    raw_response,
+    l0_state,
+    l0_json_path,
+    l4_frames,
+    local_trigger_frame,
+    pre_trigger_seconds,
+    source_timestep,
+):
     chain_risk_type = risk_type_by_id(chain.get("risk_type_id")) or {}
     risk_family = plan_output.get("risk_family") or chain.get("risk_family") or chain_risk_type.get("family")
     risk_type_id = plan_output.get("risk_type_id") or chain.get("risk_type_id")
@@ -437,7 +693,7 @@ def build_config(
     for key, value in (chain_risk_type.get("acceptance") or {}).items():
         success_criteria.setdefault(key, value)
 
-    config = {
+    return {
         "level": "L4",
         "source_l3_chain_id": chain.get("id"),
         "source_l2_id": chain.get("parent_l2_id"),
@@ -458,10 +714,69 @@ def build_config(
         "success_criteria": success_criteria,
         "event_contract": event_contract(scenario_type, success_criteria),
         "execution_backend": "opencode_scenic",
-        "_l4_plan_agent_raw": {
-            "model": getattr(plan_agent_args, "plan_model", None),
-            "raw_response": raw_response,
-            "output": plan_output,
-        },
     }
-    return config
+
+
+def build_config(
+    chain,
+    l0_state=None,
+    l0_json_path=None,
+    l4_frames=140,
+    local_trigger_frame=20,
+    pre_trigger_seconds=2.0,
+    source_timestep=0.05,
+    plan_agent_args=None,
+):
+    if plan_agent_args is None:
+        raise ValueError("L4 requires PlanAgent args; deterministic fallback is disabled.")
+
+    max_feedback_attempts = max(0, int(getattr(plan_agent_args, "plan_feedback_attempts", 1) or 0))
+    feedback = None
+    attempts = []
+    last_config = None
+    last_check = None
+    for attempt_index in range(max_feedback_attempts + 1):
+        plan_output, raw_response = run_l4_plan_agent(plan_agent_args, chain, l0_state or {}, feedback=feedback)
+        config = config_from_plan_output(
+            chain,
+            plan_output,
+            raw_response,
+            l0_state or {},
+            l0_json_path,
+            l4_frames,
+            local_trigger_frame,
+            pre_trigger_seconds,
+            source_timestep,
+        )
+        check = validate_plan_spawn_parameters(config)
+        attempts.append(
+            {
+                "attempt": attempt_index + 1,
+                "raw_response": raw_response,
+                "output": plan_output,
+                "spawn_parameter_check": check,
+            }
+        )
+        last_config = config
+        last_check = check
+        if check.get("passed"):
+            config["spawn_parameter_check"] = check
+            config["_l4_plan_agent_raw"] = {
+                "model": getattr(plan_agent_args, "plan_model", None),
+                "attempt_count": len(attempts),
+                "raw_response": raw_response,
+                "output": plan_output,
+                "attempts": attempts,
+            }
+            return config
+        if attempt_index < max_feedback_attempts:
+            feedback = plan_feedback_from_spawn_check(check)
+
+    if last_config is not None:
+        last_config["spawn_parameter_check"] = last_check
+        last_config["_l4_plan_agent_raw"] = {
+            "model": getattr(plan_agent_args, "plan_model", None),
+            "attempt_count": len(attempts),
+            "attempts": attempts,
+        }
+    raise ValueError(f"L4 PlanAgent spawn parameter check failed after feedback: {last_check.get('reason') if last_check else 'unknown'}")

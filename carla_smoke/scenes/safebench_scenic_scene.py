@@ -470,7 +470,7 @@ def capture_one_safebench_scene(
                 ]
             )
 
-            should_save = frame_idx == target_frame if target_frame is not None else frame_idx % args.save_every == 0
+            should_save = False if args.no_save_images else (frame_idx == target_frame if target_frame is not None else frame_idx % args.save_every == 0)
             if should_save:
                 per_camera_files = None
                 if camera_queues is not None:
@@ -497,6 +497,20 @@ def capture_one_safebench_scene(
                 saved += 1
                 if target_frame is not None:
                     break
+            elif args.no_save_images and frame_idx == 0:
+                snapshot = build_scene_snapshot(carla, world, ego, frame_idx, None, args.state_radius)
+                snapshot.setdefault("source", {})
+                snapshot["source"].update(
+                    {
+                        "scenario_source": "safebench_scenic",
+                        "safebench_scenic_file": os.path.relpath(scenic_file, repo_root),
+                        "safebench_scenario_index": scenario_index,
+                        "scenario_description": description,
+                        "camera_mode": args.camera_mode,
+                    }
+                )
+                state_snapshots.append(snapshot)
+                write_json(os.path.join(args.output_dir, f"state_{frame_idx:04d}.json"), snapshot)
 
             if frame_idx % 20 == 0:
                 print(f"frame={frame_idx:04d} ego_speed={speed:.2f} m/s saved={saved}")
@@ -632,6 +646,7 @@ def main():
     parser.add_argument("--camera-mode", choices=["front", "surround"], default="surround")
     parser.add_argument("--state-radius", type=float, default=80.0)
     parser.add_argument("--single-random-frame", action="store_true", help="Save exactly one randomly selected source frame.")
+    parser.add_argument("--no-save-images", action="store_true", help="Run CARLA/Scenic and write state snapshots without image files.")
     parser.add_argument("--clean-output", action="store_true")
     parser.set_defaults(try_next_on_failure=True)
     parser.add_argument(
