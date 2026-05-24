@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #    API_KEY="your_key" bash run.sh
 # 3. Or still pass --api-key "your_key" manually in extra args.
 API_KEY="${API_KEY:-}"
-API_KEY_ENV="${API_KEY_ENV:-AIHUBMIX_API_KEY}"
+API_KEY_ENV="sk-5kj0w3sYcIGsWW4kF82a7dB7A34743058b216c1613546138"
 MODEL="${MODEL:-glm-5.1}"
 SEMANTIC_FEEDBACK="${SEMANTIC_FEEDBACK:-off}"
 
