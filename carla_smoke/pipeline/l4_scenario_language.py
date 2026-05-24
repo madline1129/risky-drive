@@ -264,8 +264,8 @@ def scenic_context_from_scene(scene):
             "world_position_format": "Use Scenic 2D coordinates: actor = Car at (x @ y).",
             "heading_format": "Use Scenic heading units: with heading yaw deg or facing yaw deg.",
             "z_policy": "Do not emit Point(x, y, z). Treat L0 z only as metadata/hint.",
-        "relative_geometry": "Prefer actor.relative_to_ego over absolute coordinates when exact world points are not spawnable.",
-        "same_side_policy": "If an actor has relative_to_ego.side left/right, repairs may adjust distances only within same_side_search_policy; never flip left/right.",
+            "relative_geometry": "Prefer actor.relative_to_ego over absolute coordinates when exact world points are not spawnable.",
+            "same_side_policy": "If an actor has relative_to_ego.side left/right, repairs may adjust distances only within same_side_search_policy; never flip left/right.",
         },
     }
 
@@ -421,6 +421,20 @@ def build_semantic_primitives(config, l0_state=None):
                 ),
             ]
         )
+    elif scenario_type == "ego_action_risk":
+        primitives.extend(
+            [
+                primitive(
+                    "ego_action_risk",
+                    actor="ego",
+                    hazard_actor="primary_risk_actor",
+                    trigger_frame=trigger_frame,
+                    action=action,
+                    preserve_hazard_actor=True,
+                ),
+                primitive("record_expectation", expectation="ego continues toward an existing hazard instead of braking or avoiding"),
+            ]
+        )
     else:
         primitives.append(
             primitive(
@@ -434,6 +448,11 @@ def build_semantic_primitives(config, l0_state=None):
     return {
         "level": "L4SemanticPrimitives",
         "description": "Structured primitive graph used by OpenCode to generate Scenic scenario-language code.",
+        "risk_family": config.get("risk_family"),
+        "risk_type_id": config.get("risk_type_id"),
+        "primary_action_primitive_id": config.get("primary_action_primitive_id"),
+        "action_primitive": config.get("action_primitive"),
+        "participant_actions": config.get("participant_actions") or [],
         "scenario_type": scenario_type,
         "source_l3_chain_id": config.get("source_l3_chain_id"),
         "trigger_frame": trigger_frame,
@@ -455,6 +474,7 @@ def prepare_workspace(args, config_path, primitives_path):
         shutil.copy2(args.l0_json, os.path.join(workspace, "l0_state.json"))
     else:
         write_json(os.path.join(workspace, "l0_state.json"), {})
+    l0_state = read_json(os.path.join(workspace, "l0_state.json"))
 
     primitives = read_json(primitives_path)
     context = next(
@@ -493,17 +513,67 @@ def prepare_workspace(args, config_path, primitives_path):
         f.write(
             "# OpenCode Workspace Instructions\n\n"
             "MANDATORY SKILL: l4-scenario-language-codegen.\n"
+            "Read l4_task.json as the single business input; scenario_config.json and semantic_primitives.json are debug mirrors only.\n"
             "Generate Scenic scenario-language code only; do not generate CARLA Python code.\n"
             "Edit only generated_risk_scene.scenic.\n"
-            "The file must use the absolute map path from semantic_primitives.json.\n"
-            "Use precomputed Scenic 2D coordinates from semantic_primitives.json; never copy raw CARLA y/yaw directly.\n"
+            "The file must use the absolute map path from l4_task.scene_context.map_absolute_path.\n"
+            "Use precomputed Scenic 2D coordinates from l4_task; never copy raw CARLA y/yaw directly.\n"
             "When absolute placement fails, preserve actor.relative_to_ego.side and use same_side_search_policy.\n"
             "Write event behavior so semantic_validation in event_trace.json can pass after execution.\n"
             "The file must be executable by Scenic/CARLA.\n"
         )
+    config = read_json(workspace_config)
+    write_json(
+        os.path.join(workspace, "l4_task.json"),
+        {
+            "level": "L4OpenCodeTask",
+            "description": "Single self-contained task file for OpenCode Scenic generation.",
+            "scene_context": {
+                "town": town,
+                "map_absolute_path": map_path,
+                "coordinate_contract": context.get("coordinate_contract"),
+                "weather": context.get("weather"),
+            },
+            "risk": {
+                "risk_family": config.get("risk_family"),
+                "risk_type_id": config.get("risk_type_id"),
+                "scenario_type": config.get("scenario_type"),
+                "chain_description": config.get("chain_description"),
+                "direct_physical_outcome": config.get("direct_physical_outcome"),
+                "expected_visual_result": config.get("expected_visual_result"),
+            },
+            "actors": {
+                "ego": next(
+                    (
+                        item.get("actor")
+                        for item in primitives.get("semantic_primitives", [])
+                        if isinstance(item, dict) and item.get("primitive") == "spawn_ego"
+                    ),
+                    {},
+                ),
+                "primary_actor": primitives.get("primary_actor"),
+                "background_actors": [
+                    item.get("actor")
+                    for item in primitives.get("semantic_primitives", [])
+                    if isinstance(item, dict) and item.get("role") == "front_or_occluder_actor"
+                ],
+                "l0_state": l0_state,
+            },
+            "actions": {
+                "primary_action_primitive_id": config.get("primary_action_primitive_id"),
+                "primary_action_primitive": config.get("action_primitive"),
+                "action": config.get("action"),
+                "participant_actions": config.get("participant_actions") or [],
+                "trigger_frame": config.get("trigger_frame"),
+            },
+            "acceptance_criteria": config.get("success_criteria"),
+            "output_contract": config.get("event_contract"),
+        },
+    )
     write_json(
         os.path.join(workspace, "opencode_inputs.json"),
         {
+            "l4_task": os.path.join(workspace, "l4_task.json"),
             "scenario_config": workspace_config,
             "semantic_primitives": workspace_primitives,
             "l0_state": os.path.join(workspace, "l0_state.json"),
@@ -514,56 +584,55 @@ def prepare_workspace(args, config_path, primitives_path):
 
 
 def opencode_prompt(config_path, primitives_path, output_scenic):
+    task_path = os.path.join(os.path.dirname(output_scenic), "l4_task.json")
     return f"""MANDATORY SKILL: l4-scenario-language-codegen.
 
 Task:
-- Read scenario_config.json:
-  {config_path}
-- Read semantic_primitives.json:
-  {primitives_path}
+- Read l4_task.json as the single business input:
+  {task_path}
 - Read l0_state.json.
 - Edit exactly this Scenic file in place:
   {output_scenic}
 
 Requirements:
 - Generate Scenario/Scenic language, not Python.
-- Follow semantic_primitives.json as the hard primitive graph.
-- Use semantic_primitives.set_scene_context.map_absolute_path exactly in `param map = localPath(...)`.
-- Use the precomputed `actor.scenic_position_expression` and `actor.scenic_heading`; never convert raw CARLA x/y/yaw yourself.
+- Follow l4_task.actions.primary_action_primitive as the hard action primitive.
+- Use l4_task.scene_context.map_absolute_path exactly in `param map = localPath(...)`.
+- Use the precomputed `actor.scenic_position_expression` and `actor.scenic_heading` from l4_task; never convert raw CARLA x/y/yaw yourself.
 - Prefer `actor.relative_to_ego` for L0 actors. If exact placement fails, use `same_side_search_policy` and keep the original left/right side.
-- Preserve scenario_config.scenario_type exactly.
-- Preserve primary actor kind/type, ego-relative geometry, action, and trigger timing.
+- Do not over-constrain Scenic placement around one absolute point. Absolute L0 poses are hints; ego-relative same-side geometry is the acceptance target.
+- Preserve l4_task.risk.scenario_type exactly.
+- Preserve primary actor kind/type, ego-relative geometry, action primitive, velocity vector, direction policy, and trigger timing.
 - L0 absolute coordinates are hints; relative geometry is authoritative.
 - The generated Scenic must run through carla_smoke/scenes/safebench_scenic_scene.py.
 - Do not write Markdown. Do not ask questions. Edit only generated_risk_scene.scenic.
 """
 
 
-def opencode_repair_prompt(config_path, primitives_path, output_scenic, error_output):
+def opencode_repair_prompt(config_path, primitives_path, output_scenic, repair_feedback):
+    task_path = os.path.join(os.path.dirname(output_scenic), "l4_task.json")
     return f"""The generated Scenic scenario failed during Scenic/CARLA execution.
 
 MANDATORY SKILL: l4-scenario-language-codegen.
 
-Scenario config:
-  {config_path}
-
-Semantic primitives:
-  {primitives_path}
+Single task input:
+  {task_path}
 
 Scenic file to fix:
   {output_scenic}
 
-Execution error:
-{error_output}
+Repair feedback:
+{feedback_to_text(repair_feedback)}
 
 Repair the Scenic file in place.
 - Keep the same scenario_type and semantic primitive intent.
-- Fix Scenic syntax/runtime issues.
-- Keep `param map = localPath(...)` on the absolute map path from semantic_primitives.json.
+- Fix the concrete issue described in Repair feedback.
+- Keep `param map = localPath(...)` on the absolute map path from l4_task.json.
 - Replace any `Point(x, y, z)` / CARLA Python coordinate syntax with Scenic 2D `x @ y` syntax.
 - Do not flip actor.relative_to_ego.side. If a left-side actor does not fit, search only left-side distances; if a right-side actor does not fit, search only right-side distances.
-- If this is a semantic validation failure, use the Semantic validation report below as the repair target. Each failed check includes target, actual, and reason; edit the Scenic scenario so those checks pass. This feedback is the main regeneration signal.
-- Do not satisfy semantic validation by changing scenario_config.json, semantic_primitives.json, event_trace.json, actor type, or scenario_type. Fix only generated_risk_scene.scenic.
+- If exact absolute placement fails or Scenic cannot sample the scene, stop hard-coding the failed absolute point. Use ego-relative placement and same-side nearby search while preserving actor type, side, and front/rear relation.
+- If this is a semantic validation failure, use the failed checks in Repair feedback as the repair target. Each failed check includes target, actual, and reason; edit the Scenic scenario so those checks pass.
+- Do not satisfy semantic validation by changing l4_task.json, scenario_config.json, semantic_primitives.json, event_trace.json, actor type, or scenario_type. Fix only generated_risk_scene.scenic.
 - If a parameter used in range(...) can be float, cast it to int(...) or replace it with a fixed integer.
 - Do not switch to Python code.
 - Do not write Markdown. Edit only generated_risk_scene.scenic.
@@ -590,6 +659,127 @@ def error_text(exc):
     return repr(exc)
 
 
+def feedback_to_text(feedback):
+    if isinstance(feedback, (dict, list)):
+        return json.dumps(feedback, ensure_ascii=False, indent=2)
+    return str(feedback)
+
+
+def extract_error_line(error_output):
+    lines = [line.strip() for line in str(error_output or "").splitlines() if line.strip()]
+    for line in reversed(lines):
+        if any(token in line for token in ("Error:", "Exception:", "InvalidScenarioError", "ScenicSyntaxError")):
+            return line
+    return lines[-1] if lines else "unknown error"
+
+
+def build_execution_repair_feedback(error_output):
+    text = str(error_output or "")
+    feedback = {
+        "kind": "execution_error",
+        "issue": "Scenic/CARLA execution failed before a valid event_trace was produced.",
+        "evidence": extract_error_line(text),
+        "repair_requirements": [
+            "Keep scenario_config.scenario_type, primary actor type/kind, trigger frame, and intended action unchanged.",
+            "Fix generated_risk_scene.scenic only; do not edit JSON inputs.",
+        ],
+    }
+    location_match = re.search(r"Object at \(([^)]+)\) does not fit in container", text)
+    if "does not fit in container" in text or location_match:
+        failed_point = location_match.group(1) if location_match else "unknown"
+        feedback.update(
+            {
+                "issue": "Scenic rejected an object placement because the absolute point is outside the allowed container.",
+                "failed_point": failed_point,
+                "repair_requirements": [
+                    "Do not hard-code or retry the failed absolute point.",
+                    "Use ego-relative placement from semantic_primitives.actor.relative_to_ego instead of strict absolute placement.",
+                    "Preserve the original left/right side and front/rear relation; search only nearby same-side distances.",
+                    "For pedestrians, place the actor at a Scenic/CARLA-valid nearby road or sidewalk-compatible position, then move it according to the requested intrusion action.",
+                    "Keep scenario_type, actor type/kind, trigger frame, and primary action unchanged.",
+                ],
+            }
+        )
+    elif "failed to generate scenario" in text or "RejectionException" in text:
+        feedback.update(
+            {
+                "issue": "Scenic could not sample a valid scene under the current constraints.",
+                "repair_requirements": [
+                    "Relax over-specific placement constraints in generated_risk_scene.scenic.",
+                    "Prefer ego-relative placement over exact absolute coordinates.",
+                    "Keep same-side geometry and actor type, but allow small nearby shifts that make Scenic sampling feasible.",
+                    "Avoid combining incompatible region/container constraints.",
+                ],
+            }
+        )
+    elif "ScenicSyntaxError" in text:
+        feedback.update(
+            {
+                "issue": "Generated Scenic code has a syntax error.",
+                "repair_requirements": [
+                    "Fix Scenic syntax in generated_risk_scene.scenic.",
+                    "Avoid unsupported constructs such as timed `take ... for ... seconds` if Scenic rejects them.",
+                    "Use valid Scenic behavior syntax for actions over time.",
+                ],
+            }
+        )
+    return feedback
+
+
+def repair_requirement_for_check(check):
+    name = check.get("name")
+    if name == "ego_moving_near_trigger":
+        return "Make ego keep moving near trigger_frame; avoid starting or stopping ego before the risk event."
+    if name == "vulnerable_actor_approaches_ego":
+        return "Adjust the vulnerable actor path so distance_to_ego_m decreases after trigger_frame."
+    if name == "vulnerable_actor_moves_toward_ego_lane":
+        return "Adjust the vulnerable actor path so abs(relative_lateral_m) decreases toward the ego lane after trigger_frame."
+    if name == "initial_side_preserved":
+        return "Preserve the original left/right side when placing the primary actor."
+    if name in {"initial_lateral_tolerance", "initial_longitudinal_tolerance"}:
+        return "Place the primary actor closer to the configured ego-relative longitudinal/lateral offset."
+    if name == "front_vehicle_speed_drop":
+        return "Make the front vehicle visibly decelerate or stop after trigger_frame."
+    if name == "front_vehicle_initially_ahead":
+        return "Place the front vehicle ahead of ego with positive relative_longitudinal_m."
+    return "Modify generated_risk_scene.scenic so this failed check passes without changing JSON inputs."
+
+
+def build_semantic_repair_feedback(trace):
+    validation = (trace or {}).get("semantic_validation") or {}
+    failed_checks = []
+    for check in validation.get("checks") or []:
+        if check.get("passed"):
+            continue
+        failed_checks.append(
+            {
+                "name": check.get("name"),
+                "target": check.get("target"),
+                "actual": check.get("actual"),
+                "reason": check.get("reason") or check.get("name"),
+                "repair_requirement": repair_requirement_for_check(check),
+            }
+        )
+    return {
+        "kind": "semantic_error",
+        "issue": "Scenic executed and produced images/trace, but the physical event did not satisfy semantic validation.",
+        "scenario_type": (trace or {}).get("scenario_type"),
+        "trigger_frame": (trace or {}).get("trigger_frame"),
+        "failed_checks": failed_checks,
+        "repair_requirements": [
+            "Fix generated_risk_scene.scenic so the failed target/actual checks pass.",
+            "Do not change scenario_type, primary actor type/kind, trigger_frame, scenario_config.json, semantic_primitives.json, or event_trace.json.",
+            "If an absolute pose is hard to satisfy, use same-side ego-relative placement while preserving the intended risk semantics.",
+        ],
+    }
+
+
+def build_repair_feedback(error_output, trace=None):
+    if isinstance(trace, dict) and trace.get("semantic_validation"):
+        return build_semantic_repair_feedback(trace)
+    return build_execution_repair_feedback(error_output)
+
+
 def run_opencode(args, config_path, primitives_path, output_scenic):
     opencode_bin = shutil.which(args.opencode_bin)
     if not opencode_bin:
@@ -614,11 +804,11 @@ def run_opencode(args, config_path, primitives_path, output_scenic):
         raise RuntimeError(f"opencode completed but did not create expected Scenic file: {output_scenic}")
 
 
-def repair_opencode(args, config_path, primitives_path, output_scenic, error_output):
+def repair_opencode(args, config_path, primitives_path, output_scenic, repair_feedback):
     opencode_bin = shutil.which(args.opencode_bin)
     if not opencode_bin:
         raise RuntimeError(f"opencode binary not found: {args.opencode_bin}")
-    prompt = opencode_repair_prompt(config_path, primitives_path, output_scenic, error_output)
+    prompt = opencode_repair_prompt(config_path, primitives_path, output_scenic, repair_feedback)
     prompt_path = os.path.join(os.path.dirname(output_scenic), "opencode_repair_prompt.txt")
     with open(prompt_path, "w", encoding="utf-8") as f:
         f.write(prompt)
@@ -1133,7 +1323,7 @@ def run_scenic_with_repair(args, config_path, primitives_path, scenic_file, imag
             if attempt >= args.opencode_repair_attempts:
                 raise
             print(f"\nAsking opencode to repair Scenic file ({attempt + 1}/{args.opencode_repair_attempts}).")
-            repair_opencode(args, config_path, primitives_path, scenic_file, last_error)
+            repair_opencode(args, config_path, primitives_path, scenic_file, build_execution_repair_feedback(last_error))
 
 
 def validation_summary(trace):
@@ -1159,8 +1349,83 @@ def validation_errors(trace):
     return [str(check.get("reason") or check.get("name")) for check in checks if not check.get("passed")] or []
 
 
+def feedback_issue_lines(feedback):
+    if isinstance(feedback, list):
+        lines = []
+        for item in feedback:
+            lines.extend(feedback_issue_lines(item))
+        return lines
+    if not isinstance(feedback, dict):
+        return [str(feedback)] if feedback else []
+    lines = []
+    if feedback.get("issue"):
+        lines.append(str(feedback["issue"]))
+    if feedback.get("evidence"):
+        lines.append(f"关键证据：{feedback['evidence']}")
+    if feedback.get("failed_point"):
+        lines.append(f"失败位置：{feedback['failed_point']}")
+    for check in feedback.get("failed_checks") or []:
+        reason = check.get("reason") or check.get("name")
+        if reason:
+            lines.append(str(reason))
+    return lines
+
+
+def format_feedback(feedback_text):
+    def format_one(item):
+        if not isinstance(item, dict):
+            return str(item).strip()
+        lines = []
+        if item.get("kind"):
+            lines.append(f"- 类型：{item['kind']}")
+        if item.get("issue"):
+            lines.append(f"- 问题：{item['issue']}")
+        if item.get("evidence"):
+            lines.append(f"- 关键证据：{item['evidence']}")
+        if item.get("failed_point"):
+            lines.append(f"- 失败位置：{item['failed_point']}")
+        failed_checks = item.get("failed_checks") or []
+        if failed_checks:
+            lines.append("- 失败检查：")
+            for check in failed_checks:
+                lines.append(
+                    "  - "
+                    + json.dumps(
+                        {
+                            "name": check.get("name"),
+                            "target": check.get("target"),
+                            "actual": check.get("actual"),
+                            "reason": check.get("reason"),
+                            "repair_requirement": check.get("repair_requirement"),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+        requirements = item.get("repair_requirements") or []
+        if requirements:
+            lines.append("- 修改要求：")
+            lines.extend(f"  - {requirement}" for requirement in requirements)
+        if item.get("raw_error_file"):
+            lines.append(f"- 原始日志：{item['raw_error_file']}")
+        return "\n".join(lines) if lines else json.dumps(item, ensure_ascii=False, indent=2)
+
+    if isinstance(feedback_text, list):
+        if not feedback_text:
+            return "没有触发反馈修复。"
+        chunks = []
+        for index, item in enumerate(feedback_text, start=1):
+            chunks.append(f"### 第 {index} 轮反馈\n{format_one(item)}")
+        return "\n\n".join(chunks)
+    return format_one(feedback_text) if feedback_text else "没有触发反馈修复。"
+
+
+def has_feedback(feedback_text):
+    return bool(feedback_text) if not isinstance(feedback_text, list) else bool(feedback_text)
+
+
 def write_l4_feedback_report(path, config, before_trace=None, feedback_text="", final_trace=None, final_error=""):
-    errors = validation_errors(before_trace) if before_trace else []
+    effective_before_trace = before_trace or final_trace
+    errors = validation_errors(before_trace) if before_trace else feedback_issue_lines(final_error)
     event_desc = config.get("chain_description") or config.get("expected_visual_result") or "未提供事件描述"
     lines = [
         "# L4执行反馈报告",
@@ -1171,24 +1436,32 @@ def write_l4_feedback_report(path, config, before_trace=None, feedback_text="", 
         f"- 事件：{event_desc}",
         "",
         "## 2. 反馈之前的完成质量",
-        validation_summary(before_trace) if before_trace else "首次执行还没有形成可用验收结果。",
+        validation_summary(effective_before_trace) if effective_before_trace else "首次执行没有形成可用验收结果。",
         "",
         "## 3. 错误具体出在哪（如果有错误）",
     ]
     if errors:
         lines.extend(f"- {reason}" for reason in errors)
     elif final_error:
-        lines.append(f"- {final_error}")
+        lines.extend(f"- {line}" for line in feedback_issue_lines(final_error))
     else:
         lines.append("- 没有发现语义验收错误。")
     lines.extend(
         [
             "",
             "## 4. 反馈内容",
-            feedback_text.strip() if feedback_text else "没有触发反馈修复。",
+            format_feedback(feedback_text),
             "",
             "## 5. 反馈后执行效果",
-            validation_summary(final_trace) if final_trace else ("执行失败，未得到最终 event_trace。" if final_error else "尚未重新执行。"),
+            (
+                validation_summary(final_trace)
+                if has_feedback(feedback_text) and final_trace
+                else "没有触发反馈修复，首次执行结果就是最终效果。"
+                if final_trace and not has_feedback(feedback_text)
+                else "执行失败，未得到最终 event_trace。"
+                if final_error
+                else "尚未重新执行。"
+            ),
         ]
     )
     if final_trace and validation_errors(final_trace):
@@ -1202,8 +1475,9 @@ def write_l4_feedback_report(path, config, before_trace=None, feedback_text="", 
 
 def run_scenic_validate_with_repair(args, config_path, primitives_path, scenic_file, images_dir, config, primitives):
     report_path = os.path.join(os.path.dirname(config_path), "..", "l4_feedback_report.md")
+    report_dir = os.path.dirname(os.path.abspath(report_path))
     first_trace = None
-    feedback_text = ""
+    feedback_entries = []
     for attempt in range(args.opencode_repair_attempts + 1):
         trace = None
         try:
@@ -1215,26 +1489,31 @@ def run_scenic_validate_with_repair(args, config_path, primitives_path, scenic_f
                     validate_scenario_language_event_trace(config, primitives, trace)
                 finally:
                     write_json(os.path.join(images_dir, "event_trace.json"), trace)
-            write_l4_feedback_report(report_path, config, first_trace, feedback_text, trace)
+            write_l4_feedback_report(report_path, config, first_trace, feedback_entries, trace)
             return trace
         except (subprocess.CalledProcessError, RuntimeError) as exc:
             last_error = error_text(exc)
             if isinstance(trace, dict) and trace.get("semantic_validation"):
                 if first_trace is None:
                     first_trace = trace
-                last_error += (
-                    "\n\nSemantic validation report with target/actual/pass fields:\n"
-                    + json.dumps(trace["semantic_validation"], ensure_ascii=False, indent=2)
-                    + "\n\nExpected primary actor:\n"
-                    + json.dumps(trace.get("expected_primary_actor", {}), ensure_ascii=False, indent=2)
-                )
-            if not feedback_text:
-                feedback_text = last_error
+            raw_error_path = os.path.join(report_dir, f"repair_raw_error_attempt_{attempt + 1}.txt")
+            with open(raw_error_path, "w", encoding="utf-8") as f:
+                f.write(last_error)
+                if isinstance(trace, dict) and trace.get("semantic_validation"):
+                    f.write(
+                        "\n\nSemantic validation report with target/actual/pass fields:\n"
+                        + json.dumps(trace["semantic_validation"], ensure_ascii=False, indent=2)
+                        + "\n\nExpected primary actor:\n"
+                        + json.dumps(trace.get("expected_primary_actor", {}), ensure_ascii=False, indent=2)
+                    )
+            repair_feedback = build_repair_feedback(last_error, trace)
+            repair_feedback["raw_error_file"] = raw_error_path
+            feedback_entries.append(repair_feedback)
             if attempt >= args.opencode_repair_attempts:
-                write_l4_feedback_report(report_path, config, first_trace, feedback_text, trace, final_error=last_error)
+                write_l4_feedback_report(report_path, config, first_trace, feedback_entries, trace, final_error=repair_feedback)
                 raise
             print(f"\nAsking opencode to repair Scenic file ({attempt + 1}/{args.opencode_repair_attempts}).")
-            repair_opencode(args, config_path, primitives_path, scenic_file, last_error)
+            repair_opencode(args, config_path, primitives_path, scenic_file, repair_feedback)
 
 
 def execute_chain(args, chain, l0_state, output_dir):

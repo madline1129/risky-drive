@@ -1,0 +1,251 @@
+{
+  "version": "0.1",
+  "description": "Lightweight traffic risk library for constraining ChatScene L1-L4 risk reasoning and L4 action primitives.",
+  "risk_families": [
+    {
+      "id": "lead_vehicle_risk",
+      "name": "Lead vehicle risk",
+      "description": "Risk primarily caused by a front vehicle braking, stopping, or moving slowly in ego's path."
+    },
+    {
+      "id": "vru_risk",
+      "name": "Vulnerable road user risk",
+      "description": "Risk primarily caused by a pedestrian or cyclist moving into or occupying ego's driving space."
+    },
+    {
+      "id": "side_vehicle_risk",
+      "name": "Side vehicle risk",
+      "description": "Risk primarily caused by a side vehicle cutting in or drifting toward ego's lane."
+    },
+    {
+      "id": "obstacle_risk",
+      "name": "Road obstacle risk",
+      "description": "Risk primarily caused by a static or dynamic road obstacle blocking ego's path."
+    },
+    {
+      "id": "cargo_payload_risk",
+      "name": "Cargo or payload risk",
+      "description": "Risk primarily caused by cargo or payload dropping, sliding, or flying into ego's path."
+    },
+    {
+      "id": "ego_action_risk",
+      "name": "Ego action risk",
+      "description": "Risk primarily caused by ego continuing, reacting late, or braking insufficiently around a hazard."
+    }
+  ],
+  "risk_types": [
+    {
+      "id": "lead_vehicle_hard_brake",
+      "family": "lead_vehicle_risk",
+      "legacy_scenario_type": "front_vehicle_brake",
+      "primary_action_primitive_id": "front_vehicle_brake_after_trigger",
+      "actor_kinds": ["vehicle"],
+      "keywords": ["前车", "急刹", "刹车", "制动", "减速", "追尾", "跟车"],
+      "match": {"relative_positions": ["front"], "max_longitudinal_m": 30.0},
+      "acceptance": {"front_actor_speed_drop_mps_min": 1.0, "front_distance_change_m_min": 1.0}
+    },
+    {
+      "id": "lead_vehicle_slow_or_stop",
+      "family": "lead_vehicle_risk",
+      "legacy_scenario_type": "front_vehicle_brake",
+      "primary_action_primitive_id": "front_vehicle_slow_or_stop",
+      "actor_kinds": ["vehicle"],
+      "keywords": ["前车", "低速", "停滞", "停车", "静止", "跟车"],
+      "match": {"relative_positions": ["front"], "max_longitudinal_m": 30.0},
+      "acceptance": {"front_actor_speed_drop_mps_min": 0.5, "front_distance_change_m_min": 0.5}
+    },
+    {
+      "id": "vru_lateral_crossing",
+      "family": "vru_risk",
+      "legacy_scenario_type": "vulnerable_actor_intrusion",
+      "primary_action_primitive_id": "vru_cross_lateral_into_path",
+      "actor_kinds": ["pedestrian", "walker", "cyclist"],
+      "keywords": ["行人", "骑行", "自行车", "横穿", "横向", "穿越", "进入车道", "侵入", "A柱", "盲区"],
+      "match": {"relative_positions": ["front-left", "front-right", "left", "right"], "max_longitudinal_m": 20.0, "min_abs_lateral_m": 0.8, "max_abs_lateral_m": 6.0},
+      "acceptance": {"actor_motion_m_min": 1.0, "min_abs_relative_lateral_m_max": 2.2, "distance_to_ego_decrease_min": 0.5}
+    },
+    {
+      "id": "vru_longitudinal_intrusion",
+      "family": "vru_risk",
+      "legacy_scenario_type": "vulnerable_actor_intrusion",
+      "primary_action_primitive_id": "vru_move_longitudinal_in_path",
+      "actor_kinds": ["pedestrian", "walker", "cyclist"],
+      "keywords": ["行人", "骑行", "自行车", "向前", "纵向", "沿自车", "加速", "进入前方"],
+      "match": {"relative_positions": ["front-left", "front-right", "front"], "max_longitudinal_m": 20.0},
+      "acceptance": {"actor_motion_m_min": 1.0, "min_distance_to_ego_m_max": 8.0, "distance_to_ego_decrease_min": 0.5}
+    },
+    {
+      "id": "vru_emerge_from_occlusion",
+      "family": "vru_risk",
+      "legacy_scenario_type": "vulnerable_actor_intrusion",
+      "primary_action_primitive_id": "vru_emerge_from_occlusion_into_path",
+      "actor_kinds": ["pedestrian", "walker", "cyclist"],
+      "keywords": ["行人", "骑行", "遮挡", "盲区", "A柱", "突然出现", "未观察到"],
+      "match": {"relative_positions": ["front-left", "front-right", "left", "right"], "max_longitudinal_m": 25.0},
+      "acceptance": {"actor_motion_m_min": 1.0, "min_distance_to_ego_m_max": 8.0}
+    },
+    {
+      "id": "side_vehicle_cut_in",
+      "family": "side_vehicle_risk",
+      "legacy_scenario_type": "side_vehicle_intrusion",
+      "primary_action_primitive_id": "side_vehicle_cut_in_to_ego_lane",
+      "actor_kinds": ["vehicle"],
+      "keywords": ["侧车", "侧方", "变道", "切入", "并线", "车道空间"],
+      "match": {"relative_positions": ["front-left", "front-right", "left", "right"], "max_abs_lateral_m": 6.0},
+      "acceptance": {"relative_lateral_delta_m_min": 1.2, "min_abs_relative_lateral_m_max": 2.2}
+    },
+    {
+      "id": "side_vehicle_drift_intrusion",
+      "family": "side_vehicle_risk",
+      "legacy_scenario_type": "side_vehicle_intrusion",
+      "primary_action_primitive_id": "side_vehicle_drift_toward_ego_lane",
+      "actor_kinds": ["vehicle"],
+      "keywords": ["侧车", "偏移", "压线", "侵入", "车道空间"],
+      "match": {"relative_positions": ["front-left", "front-right", "left", "right"], "max_abs_lateral_m": 6.0},
+      "acceptance": {"relative_lateral_delta_m_min": 0.8, "min_abs_relative_lateral_m_max": 2.5}
+    },
+    {
+      "id": "static_obstacle_in_path",
+      "family": "obstacle_risk",
+      "legacy_scenario_type": "road_obstacle_intrusion",
+      "primary_action_primitive_id": "static_obstacle_blocking_path",
+      "actor_kinds": ["obstacle", "static", "vehicle"],
+      "keywords": ["障碍", "静止", "停在", "阻挡", "路径"],
+      "match": {"relative_positions": ["front", "front-left", "front-right"], "max_longitudinal_m": 20.0},
+      "acceptance": {"min_obstacle_distance_to_ego_m_max": 12.0}
+    },
+    {
+      "id": "cargo_drop_into_path",
+      "family": "cargo_payload_risk",
+      "legacy_scenario_type": "cargo_drop",
+      "primary_action_primitive_id": "cargo_drop_or_slide_into_path",
+      "actor_kinds": ["payload", "cargo", "object", "vehicle"],
+      "keywords": ["货物", "掉落", "滑落", "飞出", "载荷", "绳索"],
+      "match": {"relative_positions": ["front", "front-left", "front-right"], "max_longitudinal_m": 35.0},
+      "acceptance": {"payload_count_min": 1, "payload_motion_m_min": 0.5}
+    },
+    {
+      "id": "ego_continue_toward_hazard",
+      "family": "ego_action_risk",
+      "legacy_scenario_type": "ego_action_risk",
+      "primary_action_primitive_id": "ego_continue_without_braking",
+      "actor_kinds": ["ego"],
+      "hazard_actor_kinds": ["vehicle", "pedestrian", "walker", "cyclist", "obstacle"],
+      "keywords": ["未减速", "继续", "直行", "未观察到", "反应延迟", "碰撞不可避免"],
+      "match": {"hazard_relative_positions": ["front", "front-left", "front-right"], "max_longitudinal_m": 20.0},
+      "acceptance": {"ego_speed_near_trigger_min": 1.0, "distance_to_hazard_decrease_min": 0.5, "min_distance_to_hazard_m_max": 4.0}
+    },
+    {
+      "id": "ego_insufficient_braking",
+      "family": "ego_action_risk",
+      "legacy_scenario_type": "ego_action_risk",
+      "primary_action_primitive_id": "ego_late_or_insufficient_braking",
+      "actor_kinds": ["ego"],
+      "hazard_actor_kinds": ["vehicle", "pedestrian", "walker", "cyclist", "obstacle"],
+      "keywords": ["制动不足", "刹车不足", "反应不及", "距离不足"],
+      "match": {"hazard_relative_positions": ["front", "front-left", "front-right"], "max_longitudinal_m": 25.0},
+      "acceptance": {"ego_speed_near_trigger_min": 0.5, "distance_to_hazard_decrease_min": 0.5}
+    }
+  ],
+  "action_primitives": [
+    {
+      "id": "front_vehicle_brake_after_trigger",
+      "controlled_actor_role": "front_vehicle",
+      "motion_frame": "lane_following",
+      "velocity_vector": {"speed_policy": "decelerate_to_target", "target_speed_mps": 0.0},
+      "direction_policy": "keep_lane",
+      "stop_condition": "target_speed_or_timeout",
+      "acceptance_checks": ["front_vehicle_speed_drop", "front_vehicle_initially_ahead"]
+    },
+    {
+      "id": "front_vehicle_slow_or_stop",
+      "controlled_actor_role": "front_vehicle",
+      "motion_frame": "lane_following",
+      "velocity_vector": {"speed_policy": "maintain_low_or_stop"},
+      "direction_policy": "keep_lane",
+      "stop_condition": "timeout",
+      "acceptance_checks": ["front_vehicle_initially_ahead", "front_distance_change"]
+    },
+    {
+      "id": "vru_cross_lateral_into_path",
+      "controlled_actor_role": "vulnerable_actor",
+      "motion_frame": "ego_local",
+      "velocity_vector": {"lateral_direction": "toward_ego_lane", "longitudinal_policy": "maintain_or_reduce_distance"},
+      "direction_policy": "reduce_abs_lateral_to_ego",
+      "stop_condition": "reached_ego_lane_or_timeout",
+      "acceptance_checks": ["vulnerable_actor_moves_after_trigger", "vulnerable_actor_moves_toward_ego_lane", "vulnerable_actor_approaches_ego"]
+    },
+    {
+      "id": "vru_move_longitudinal_in_path",
+      "controlled_actor_role": "vulnerable_actor",
+      "motion_frame": "ego_local",
+      "velocity_vector": {"longitudinal_direction": "toward_conflict_point", "lateral_policy": "enter_or_remain_near_ego_lane"},
+      "direction_policy": "reduce_distance_to_ego_or_conflict_point",
+      "stop_condition": "min_distance_or_timeout",
+      "acceptance_checks": ["vulnerable_actor_moves_after_trigger", "vulnerable_actor_approaches_ego"]
+    },
+    {
+      "id": "vru_emerge_from_occlusion_into_path",
+      "controlled_actor_role": "vulnerable_actor",
+      "motion_frame": "ego_local",
+      "velocity_vector": {"direction": "from_occluder_toward_ego_path"},
+      "direction_policy": "enter_ego_path_from_occluded_side",
+      "stop_condition": "visible_in_ego_path_or_timeout",
+      "acceptance_checks": ["vulnerable_actor_moves_after_trigger", "vulnerable_actor_close_enough"]
+    },
+    {
+      "id": "side_vehicle_cut_in_to_ego_lane",
+      "controlled_actor_role": "side_vehicle",
+      "motion_frame": "ego_local",
+      "velocity_vector": {"lateral_direction": "toward_ego_lane", "longitudinal_policy": "forward"},
+      "direction_policy": "reduce_abs_lateral_to_ego",
+      "stop_condition": "reached_ego_lane_or_timeout",
+      "acceptance_checks": ["side_vehicle_enters_ego_lane"]
+    },
+    {
+      "id": "side_vehicle_drift_toward_ego_lane",
+      "controlled_actor_role": "side_vehicle",
+      "motion_frame": "ego_local",
+      "velocity_vector": {"lateral_direction": "toward_ego_lane", "lateral_speed_policy": "slow_drift"},
+      "direction_policy": "reduce_abs_lateral_to_ego",
+      "stop_condition": "timeout",
+      "acceptance_checks": ["side_vehicle_enters_ego_lane"]
+    },
+    {
+      "id": "static_obstacle_blocking_path",
+      "controlled_actor_role": "road_obstacle",
+      "motion_frame": "world",
+      "velocity_vector": {"speed_mps": 0.0},
+      "direction_policy": "static_in_ego_path",
+      "stop_condition": "timeout",
+      "acceptance_checks": ["obstacle_close_enough"]
+    },
+    {
+      "id": "cargo_drop_or_slide_into_path",
+      "controlled_actor_role": "payload",
+      "motion_frame": "ego_local",
+      "velocity_vector": {"direction": "toward_ego_path_or_downward_drop"},
+      "direction_policy": "enter_ego_path",
+      "stop_condition": "path_blocked_or_timeout",
+      "acceptance_checks": ["payload_present", "payload_motion"]
+    },
+    {
+      "id": "ego_continue_without_braking",
+      "controlled_actor_role": "ego",
+      "motion_frame": "lane_following",
+      "velocity_vector": {"speed_policy": "maintain_current_speed", "longitudinal_direction": "forward"},
+      "direction_policy": "follow_lane_toward_hazard",
+      "stop_condition": "min_distance_or_timeout",
+      "acceptance_checks": ["ego_moving_near_trigger", "distance_to_hazard_decreases"]
+    },
+    {
+      "id": "ego_late_or_insufficient_braking",
+      "controlled_actor_role": "ego",
+      "motion_frame": "lane_following",
+      "velocity_vector": {"speed_policy": "delayed_or_partial_deceleration", "longitudinal_direction": "forward"},
+      "direction_policy": "follow_lane_toward_hazard",
+      "stop_condition": "late_brake_or_timeout",
+      "acceptance_checks": ["ego_moving_near_trigger", "distance_to_hazard_decreases"]
+    }
+  ]
+}

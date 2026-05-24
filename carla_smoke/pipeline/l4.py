@@ -13,6 +13,7 @@ try:
         get_api_key,
         parse_json_response,
     )
+    from risk_library import action_primitive_by_id, risk_type_by_id
 except ImportError:
     from .deepseek_client import (
         DEFAULT_DEEPSEEK_MODEL,
@@ -21,6 +22,7 @@ except ImportError:
         get_api_key,
         parse_json_response,
     )
+    from .risk_library import action_primitive_by_id, risk_type_by_id
 
 
 PLAN_AGENT_PROMPT_TEMPLATE = """你是 L4 PlanAgent。
@@ -29,15 +31,19 @@ PLAN_AGENT_PROMPT_TEMPLATE = """你是 L4 PlanAgent。
 
 硬性要求：
 - 不改写 L3 的核心事件。
+- 如果 L3 已经给出 risk_type_id / primary_trigger_action_id，必须优先沿用；你的任务是选择/实例化风险库动作原语，不要自由发明 action.mode。
 - 如果 L3 / L2 / L1 已经指定 primary_perturbation_object 或 selected_actor，必须沿用这个对象。
 - source="l0_actor" 的对象必须保留 actor_id、type_id、kind、location、rotation、relative_longitudinal_m、relative_lateral_m。
-- scenario_type 只能是：front_vehicle_brake, cargo_drop, vulnerable_actor_intrusion, road_obstacle_intrusion, side_vehicle_intrusion。
+- scenario_type 只能是：front_vehicle_brake, cargo_drop, vulnerable_actor_intrusion, road_obstacle_intrusion, side_vehicle_intrusion, ego_action_risk。
 - 只输出 JSON，不要 Markdown。
 
 输出格式：
 {
   "level": "L4Plan",
   "scenario_type": "front_vehicle_brake",
+  "risk_family": "lead_vehicle_risk",
+  "risk_type_id": "lead_vehicle_hard_brake",
+  "primary_action_primitive_id": "front_vehicle_brake_after_trigger",
   "translation_reason": "为什么这样翻译",
   "primary_object": {
     "source": "l0_actor/generated_object",
@@ -48,8 +54,10 @@ PLAN_AGENT_PROMPT_TEMPLATE = """你是 L4 PlanAgent。
     "selection_reason": "引用 L0/L3 字段说明"
   },
   "action": {
-    "mode": "brake_or_decelerate_after_trigger",
+    "mode": "front_vehicle_brake_after_trigger",
     "speed_mps": 2.2,
+    "velocity_vector": {"speed_policy": "decelerate_to_target", "target_speed_mps": 0.0},
+    "direction_policy": "keep_lane",
     "brake_intensity": 1.0,
     "target_speed_mps": 0.0,
     "deceleration_mps2": 6.0
@@ -160,11 +168,20 @@ def compact_l0_for_prompt(l0_state):
 
 
 def build_l4_plan_agent_prompt(chain, l0_state):
+    risk_type = risk_type_by_id(chain.get("risk_type_id")) or {}
+    primitive_id = chain.get("primary_trigger_action_id") or risk_type.get("primary_action_primitive_id")
+    action_primitive = action_primitive_by_id(primitive_id) or {}
     payload = {
         "l3_chain": chain,
         "l0_state": compact_l0_for_prompt(l0_state),
         "inherited_primary_object": chain.get("primary_perturbation_object") or chain.get("selected_actor"),
         "actor_list": chain.get("actor_list") or [],
+        "risk_library_selection": {
+            "risk_family": chain.get("risk_family") or risk_type.get("family"),
+            "risk_type": risk_type,
+            "primary_action_primitive": action_primitive,
+            "participant_actions": chain.get("participant_actions") or [],
+        },
     }
     return PLAN_AGENT_PROMPT_TEMPLATE + "\n\n输入 JSON：\n" + json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -225,6 +242,10 @@ def default_action(scenario_type, plan_output):
     elif scenario_type == "road_obstacle_intrusion":
         action.setdefault("mode", "place_or_move_obstacle_into_ego_path")
         action.setdefault("obstacle_count_min", 1)
+    elif scenario_type == "ego_action_risk":
+        action.setdefault("mode", "ego_continue_without_braking")
+        action.setdefault("controlled_actor", "ego")
+        action.setdefault("must_reduce_distance_to_hazard", True)
     return action
 
 
@@ -248,6 +269,10 @@ def default_success_criteria(scenario_type, plan_output):
     elif scenario_type == "road_obstacle_intrusion":
         criteria.setdefault("obstacle_count_min", 1)
         criteria.setdefault("min_obstacle_distance_to_ego_m_max", 12.0)
+    elif scenario_type == "ego_action_risk":
+        criteria.setdefault("ego_speed_near_trigger_min", 1.0)
+        criteria.setdefault("distance_to_hazard_decrease_min", 0.5)
+        criteria.setdefault("min_distance_to_hazard_m_max", 4.0)
     criteria.setdefault("must_match_scenario_type", scenario_type)
     criteria.setdefault("must_use_primary_actor_from_config", True)
     return criteria
@@ -263,6 +288,8 @@ def event_contract(scenario_type, success_criteria):
         fields.extend(["primary_actor_position", "distance_to_ego_m", "relative_lateral_m"])
     elif scenario_type in {"cargo_drop", "road_obstacle_intrusion"}:
         fields.extend(["primary_actor_position", "distance_to_ego_m"])
+    elif scenario_type == "ego_action_risk":
+        fields.extend(["primary_actor_position", "distance_to_ego_m", "relative_longitudinal_m"])
     return {
         "trace_file": "event_trace.json",
         "required_top_level_fields": ["scenario_type", "trigger_frame", "frames", "event_applied"],
@@ -285,21 +312,44 @@ def build_config(
         raise ValueError("L4 requires PlanAgent args; deterministic fallback is disabled.")
 
     plan_output, raw_response = run_l4_plan_agent(plan_agent_args, chain, l0_state or {})
-    scenario_type = plan_output.get("scenario_type")
+    chain_risk_type = risk_type_by_id(chain.get("risk_type_id")) or {}
+    risk_family = plan_output.get("risk_family") or chain.get("risk_family") or chain_risk_type.get("family")
+    risk_type_id = plan_output.get("risk_type_id") or chain.get("risk_type_id")
+    action_primitive_id = (
+        plan_output.get("primary_action_primitive_id")
+        or chain.get("primary_trigger_action_id")
+        or chain_risk_type.get("primary_action_primitive_id")
+    )
+    action_primitive = action_primitive_by_id(action_primitive_id) or {}
+    scenario_type = plan_output.get("scenario_type") or chain_risk_type.get("legacy_scenario_type")
     if not scenario_type:
         raise ValueError("L4 PlanAgent output missing scenario_type.")
 
     primary_actor = primary_from_chain_or_plan(chain, plan_output, l0_state or {})
     action = default_action(scenario_type, plan_output)
+    if action_primitive_id:
+        action.setdefault("mode", action_primitive_id)
+        action["action_primitive_id"] = action_primitive_id
+    if action_primitive:
+        action.setdefault("velocity_vector", action_primitive.get("velocity_vector"))
+        action.setdefault("direction_policy", action_primitive.get("direction_policy"))
+        action.setdefault("motion_frame", action_primitive.get("motion_frame"))
     trigger_frame = int(local_trigger_frame or 20)
     action["trigger_frame"] = trigger_frame
     success_criteria = default_success_criteria(scenario_type, plan_output)
+    for key, value in (chain_risk_type.get("acceptance") or {}).items():
+        success_criteria.setdefault(key, value)
 
     config = {
         "level": "L4",
         "source_l3_chain_id": chain.get("id"),
         "source_l2_id": chain.get("parent_l2_id"),
         "source_l0_state_file": os.path.abspath(l0_json_path) if l0_json_path else None,
+        "risk_family": risk_family,
+        "risk_type_id": risk_type_id,
+        "primary_action_primitive_id": action_primitive_id,
+        "action_primitive": action_primitive,
+        "participant_actions": chain.get("participant_actions") or [],
         "scenario_type": scenario_type,
         "trigger_frame": trigger_frame,
         "chain_description": chain.get("chain_description"),
