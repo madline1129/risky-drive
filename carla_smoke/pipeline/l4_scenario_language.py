@@ -534,6 +534,7 @@ def prepare_workspace(args, task_source_path, primitives_path):
         shutil.copy2(args.l0_json, os.path.join(workspace, "l0_state.json"))
     else:
         write_json(os.path.join(workspace, "l0_state.json"), {})
+    write_opencode_provider_config(args, workspace)
     l0_state = read_json(os.path.join(workspace, "l0_state.json"))
 
     primitives = read_json(primitives_path)
@@ -640,6 +641,33 @@ def prepare_workspace(args, task_source_path, primitives_path):
     return workspace, workspace_task, workspace_primitives, output_scenic
 
 
+def write_opencode_provider_config(args, workspace):
+    model_name = normalize_opencode_model_name(getattr(args, "opencode_model", None))
+    if model_name != "aihubmix/glm-5.1":
+        return
+    write_json(
+        os.path.join(workspace, "opencode.json"),
+        {
+            "$schema": "https://opencode.ai/config.json",
+            "provider": {
+                "aihubmix": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": "AIHubMix",
+                    "options": {
+                        "baseURL": "https://aihubmix.com/v1",
+                        "apiKey": "{env:AIHUBMIX_API_KEY}",
+                    },
+                    "models": {
+                        "glm-5.1": {
+                            "name": "GLM-5.1"
+                        }
+                    },
+                }
+            },
+        },
+    )
+
+
 def opencode_prompt(task_path, primitives_path, output_scenic):
     task_path = os.path.join(os.path.dirname(output_scenic), "l4_task.json")
     return f"""MANDATORY SKILL: l4-scenario-language-codegen.
@@ -696,16 +724,16 @@ Repair the Scenic file in place.
 """
 
 
-def run_command(command, capture_output=False):
+def run_command(command, capture_output=False, env=None):
     print("\n$ " + " ".join(command))
     if capture_output:
-        result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        result = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
         if result.stdout:
             print(result.stdout)
         if result.returncode != 0:
             raise subprocess.CalledProcessError(result.returncode, command, output=result.stdout)
         return result
-    subprocess.run(command, check=True)
+    subprocess.run(command, check=True, env=env)
     return None
 
 
@@ -837,6 +865,13 @@ def build_repair_feedback(error_output, trace=None):
     return build_execution_repair_feedback(error_output)
 
 
+def opencode_env(args):
+    env = os.environ.copy()
+    if getattr(args, "api_key", None):
+        env.setdefault("AIHUBMIX_API_KEY", args.api_key)
+    return env
+
+
 def run_opencode(args, task_path, primitives_path, output_scenic):
     opencode_bin = shutil.which(args.opencode_bin)
     if not opencode_bin:
@@ -856,6 +891,7 @@ def run_opencode(args, task_path, primitives_path, output_scenic):
             prompt,
         ],
         capture_output=True,
+        env=opencode_env(args),
     )
     if not os.path.exists(output_scenic):
         raise RuntimeError(f"opencode completed but did not create expected Scenic file: {output_scenic}")
@@ -880,6 +916,7 @@ def repair_opencode(args, task_path, primitives_path, output_scenic, repair_feed
             prompt,
         ],
         capture_output=True,
+        env=opencode_env(args),
     )
 
 

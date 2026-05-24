@@ -188,7 +188,9 @@ def normalize_opencode_model_name(model):
     if not model:
         return model
     if model == "glm-5.1":
-        return "glm-5.1"
+        return "aihubmix/glm-5.1"
+    if model.startswith("glm-"):
+        return f"aihubmix/{model}"
     if model == "deepseek-v4-pro":
         return "deepseek/deepseek-v4-pro"
     if model == "deepseek-v4-flash":
