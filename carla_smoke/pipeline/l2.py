@@ -6,7 +6,7 @@ import json
 import os
 import sys
 
-from deepseek_client import DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DeepSeekError, chat_json, get_api_key, parse_json_response
+from deepseek_client import DEFAULT_API_KEY_ENV, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DeepSeekError, chat_json, get_api_key, parse_json_response
 from risk_library import risk_types_for_family
 
 
@@ -276,13 +276,21 @@ def normalize_output(parsed, l1_data, source_l1_file):
     }
 
 
+def fallback_output(l1_data, source_l1_file):
+    events = []
+    for rank, risk in enumerate(l1_risks_from_data(l1_data)[:5], start=1):
+        events.extend(fallback_events_for_risk(risk, rank))
+    return normalize_output({"trigger_event_hypotheses": events[:10]}, l1_data, source_l1_file)
+
+
 def main():
     parser = argparse.ArgumentParser(description="DeepSeek L2 subagent: trigger-event hypotheses from L1 risk JSON.")
     parser.add_argument("l1_json", help="Path to l0/risks.json.")
     parser.add_argument("--l0-json", default=None, help="Optional l0/state.json for context.")
     parser.add_argument("--model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--url", default=DEFAULT_DEEPSEEK_URL)
-    parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
+    parser.add_argument("--api-key-env", default=DEFAULT_API_KEY_ENV)
+    parser.add_argument("--api-key", default=None, help="Explicit API key. Prefer .env/API_KEY_ENV for shared runs.")
     parser.add_argument("--env-file", default=None, help="Optional .env path. Defaults to searching upward from cwd.")
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--output-dir", default="carla_smoke/workdir/manual/l2")
@@ -293,16 +301,35 @@ def main():
     prompt = build_prompt(l1_data, l0_data)
 
     print(f"L2 DeepSeek input: {args.l1_json}")
-    api_key = get_api_key(args.api_key_env, args.env_file)
-    raw_response = chat_json(args.url, args.model, api_key, prompt, args.timeout)
-    parsed = parse_json_response(raw_response)
-
-    output = normalize_output(parsed, l1_data, args.l1_json)
     triggers_path = os.path.join(args.output_dir, "triggers.json")
     raw_path = os.path.join(args.output_dir, "deepseek_raw.json")
+    error_path = os.path.join(args.output_dir, "deepseek_error.json")
+
+    raw_response = None
+    try:
+        api_key = get_api_key(args.api_key_env, args.env_file, args.api_key)
+        raw_response = chat_json(args.url, args.model, api_key, prompt, args.timeout)
+        parsed = parse_json_response(raw_response)
+        output = normalize_output(parsed, l1_data, args.l1_json)
+        output["fallback_used"] = False
+    except (DeepSeekError, ValueError, json.JSONDecodeError) as exc:
+        print(f"WARNING: L2 DeepSeek failed; using local trigger fallback: {exc}", file=sys.stderr)
+        output = fallback_output(l1_data, args.l1_json)
+        output["fallback_used"] = True
+        output["fallback_reason"] = repr(exc)
+        write_json(
+            error_path,
+            {
+                "model": args.model,
+                "url": args.url,
+                "error": repr(exc),
+                "fallback": "fallback_events_for_risk",
+            },
+        )
 
     write_json(triggers_path, output)
-    write_json(raw_path, {"raw_response": raw_response})
+    if raw_response is not None:
+        write_json(raw_path, {"raw_response": raw_response})
 
     print(f"Saved L2 triggers: {os.path.abspath(triggers_path)}")
     return 0

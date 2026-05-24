@@ -6,14 +6,30 @@ import os
 import subprocess
 import sys
 
+from deepseek_client import DEFAULT_API_KEY_ENV, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL
+
 
 def repo_root_from_this_file():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 def run_command(command):
-    print("\n$ " + " ".join(command))
+    print("\n$ " + " ".join(redact_command(command)))
     subprocess.run(command, check=True)
+
+
+def redact_command(command):
+    redacted = []
+    hide_next = False
+    for item in command:
+        if hide_next:
+            redacted.append("<redacted>")
+            hide_next = False
+            continue
+        redacted.append(item)
+        if item == "--api-key":
+            hide_next = True
+    return redacted
 
 
 def main():
@@ -58,12 +74,13 @@ def main():
     parser.add_argument("--weather", default="ClearNoon")
     parser.add_argument("--workdir-root", default=default_workdir_root)
     parser.add_argument("--run-id", default=None)
-    parser.add_argument("--model", default="deepseek-v4-pro")
-    parser.add_argument("--deepseek-url", default="https://api.deepseek.com/chat/completions")
-    parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
+    parser.add_argument("--model", default=DEFAULT_DEEPSEEK_MODEL)
+    parser.add_argument("--deepseek-url", "--llm-url", dest="deepseek_url", default=DEFAULT_DEEPSEEK_URL)
+    parser.add_argument("--api-key-env", default=DEFAULT_API_KEY_ENV)
+    parser.add_argument("--api-key", default=None, help="Explicit API key. Prefer .env/API_KEY_ENV for shared runs.")
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--opencode-bin", default="opencode")
-    parser.add_argument("--opencode-model", default="deepseek-v4-pro")
+    parser.add_argument("--opencode-model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
     parser.add_argument("--l4-frames", type=int, default=180)
     parser.add_argument("--l4-save-every", type=int, default=5)
@@ -144,6 +161,8 @@ def main():
         command.extend(["--run-id", args.run_id])
     if args.env_file:
         command.extend(["--env-file", args.env_file])
+    if args.api_key:
+        command.extend(["--api-key", args.api_key])
     if not args.skip_event_trace_validation:
         command.append("--validate-event-trace")
     if not args.stop_on_chain_error:

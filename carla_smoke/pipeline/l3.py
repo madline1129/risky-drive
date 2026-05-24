@@ -6,7 +6,7 @@ import json
 import os
 import sys
 
-from deepseek_client import DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DeepSeekError, chat_json, get_api_key, parse_json_response
+from deepseek_client import DEFAULT_API_KEY_ENV, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DeepSeekError, chat_json, get_api_key, parse_json_response
 from risk_library import risk_type_by_id
 
 
@@ -291,13 +291,39 @@ def normalize_output(parsed, l2_data, source_l2_file):
     }
 
 
+def fallback_chains_from_l2(l2_data):
+    chains = []
+    for idx, event in enumerate(trigger_events_from_data(l2_data)[:10], start=1):
+        if not isinstance(event, dict):
+            continue
+        chains.append(
+            {
+                "level": "L3",
+                "id": f"L3-{idx}",
+                "parent_l2_id": event.get("id"),
+                "parent_l2_trigger": event.get("trigger_name"),
+                "risk_family": event.get("risk_family"),
+                "risk_type_id": event.get("risk_type_id"),
+                "chain_description": f"{event.get('trigger_name', '触发事件')}发生后，风险对象进入与自车发生冲突的初始运动阶段。",
+                "direct_physical_outcome": event.get("immediate_effect") or "自车与风险对象的安全距离或可避让空间被压缩。",
+                "participant_actions": [],
+            }
+        )
+    return chains
+
+
+def fallback_output(l2_data, source_l2_file):
+    return normalize_output({"initial_accident_chains": fallback_chains_from_l2(l2_data)}, l2_data, source_l2_file)
+
+
 def main():
     parser = argparse.ArgumentParser(description="DeepSeek L3 subagent: initial accident chains from L2 triggers.")
     parser.add_argument("l2_json", help="Path to l2/triggers.json.")
     parser.add_argument("--l0-json", default=None, help="Optional l0/state.json for context.")
     parser.add_argument("--model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--url", default=DEFAULT_DEEPSEEK_URL)
-    parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
+    parser.add_argument("--api-key-env", default=DEFAULT_API_KEY_ENV)
+    parser.add_argument("--api-key", default=None, help="Explicit API key. Prefer .env/API_KEY_ENV for shared runs.")
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--output-dir", default="carla_smoke/workdir/manual/l3")
@@ -308,15 +334,35 @@ def main():
     prompt = build_prompt(l2_data, l0_data)
 
     print(f"L3 DeepSeek input: {args.l2_json}")
-    api_key = get_api_key(args.api_key_env, args.env_file)
-    raw_response = chat_json(args.url, args.model, api_key, prompt, args.timeout)
-    parsed = parse_json_response(raw_response)
-
-    output = normalize_output(parsed, l2_data, args.l2_json)
     chains_path = os.path.join(args.output_dir, "chains.json")
     raw_path = os.path.join(args.output_dir, "deepseek_raw.json")
+    error_path = os.path.join(args.output_dir, "deepseek_error.json")
+
+    raw_response = None
+    try:
+        api_key = get_api_key(args.api_key_env, args.env_file, args.api_key)
+        raw_response = chat_json(args.url, args.model, api_key, prompt, args.timeout)
+        parsed = parse_json_response(raw_response)
+        output = normalize_output(parsed, l2_data, args.l2_json)
+        output["fallback_used"] = False
+    except (DeepSeekError, ValueError, json.JSONDecodeError) as exc:
+        print(f"WARNING: L3 DeepSeek failed; using local chain fallback: {exc}", file=sys.stderr)
+        output = fallback_output(l2_data, args.l2_json)
+        output["fallback_used"] = True
+        output["fallback_reason"] = repr(exc)
+        write_json(
+            error_path,
+            {
+                "model": args.model,
+                "url": args.url,
+                "error": repr(exc),
+                "fallback": "fallback_chains_from_l2",
+            },
+        )
+
     write_json(chains_path, output)
-    write_json(raw_path, {"raw_response": raw_response})
+    if raw_response is not None:
+        write_json(raw_path, {"raw_response": raw_response})
     print(f"Saved L3 chains: {os.path.abspath(chains_path)}")
     return 0
 

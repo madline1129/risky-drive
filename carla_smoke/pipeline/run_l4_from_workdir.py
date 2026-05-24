@@ -6,6 +6,8 @@ import os
 import subprocess
 import sys
 
+from deepseek_client import DEFAULT_API_KEY_ENV, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL
+
 
 def repo_root_from_this_file():
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -47,11 +49,12 @@ def main():
     parser.add_argument("--execute", action="store_true", default=True)
     parser.add_argument("--no-execute", action="store_true")
     parser.add_argument("--opencode-bin", default="opencode")
-    parser.add_argument("--opencode-model", default="deepseek-v4-pro")
+    parser.add_argument("--opencode-model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
-    parser.add_argument("--plan-model", default="deepseek-v4-pro")
-    parser.add_argument("--plan-url", default="https://api.deepseek.com/chat/completions")
-    parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
+    parser.add_argument("--plan-model", default=DEFAULT_DEEPSEEK_MODEL)
+    parser.add_argument("--plan-url", default=DEFAULT_DEEPSEEK_URL)
+    parser.add_argument("--api-key-env", default=DEFAULT_API_KEY_ENV)
+    parser.add_argument("--api-key", default=None, help="Explicit API key. Prefer .env/API_KEY_ENV for shared runs.")
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--plan-timeout", type=float, default=300.0)
     args = parser.parse_args()
@@ -116,6 +119,8 @@ def main():
     ]
     if args.env_file:
         command.extend(["--env-file", args.env_file])
+    if args.api_key:
+        command.extend(["--api-key", args.api_key])
     if not args.no_execute and args.execute:
         command.append("--execute")
     if args.chain_index is None:

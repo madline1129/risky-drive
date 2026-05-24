@@ -11,6 +11,7 @@ import sys
 from deepseek_client import (
     DEFAULT_DEEPSEEK_MODEL,
     DEFAULT_DEEPSEEK_URL,
+    DEFAULT_API_KEY_ENV,
     DeepSeekError,
     chat_json,
     get_api_key,
@@ -559,7 +560,8 @@ def main():
     parser.add_argument("path", help="Image file or directory from the CARLA scene output.")
     parser.add_argument("--model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--url", default=DEFAULT_DEEPSEEK_URL)
-    parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
+    parser.add_argument("--api-key-env", default=DEFAULT_API_KEY_ENV)
+    parser.add_argument("--api-key", default=None, help="Explicit API key. Prefer .env/API_KEY_ENV for shared runs.")
     parser.add_argument("--env-file", default=None, help="Optional .env path. Defaults to searching upward from cwd.")
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument("--select", choices=["first", "middle", "last"], default="middle")
@@ -601,25 +603,48 @@ def main():
     print(f"L0 state source: {l0_state.get('source', {}).get('sensor', 'unknown')}")
     print("Selected images: " + ", ".join(selected_images))
 
-    api_key = get_api_key(args.api_key_env, args.env_file)
-    raw_response = chat_json(args.url, args.model, api_key, prompt, args.timeout)
-    parsed = parse_json_response(raw_response)
-
-    risks = normalize_risks(parsed, l0_state, risk_family_candidates)
-
     state_path = os.path.join(args.output_dir, "state.json")
     risks_path = os.path.join(args.output_dir, "risks.json")
     raw_path = os.path.join(args.output_dir, "deepseek_raw.json")
+    error_path = os.path.join(args.output_dir, "deepseek_error.json")
+
+    raw_response = None
+    fallback_used = False
+    fallback_reason = None
+    try:
+        api_key = get_api_key(args.api_key_env, args.env_file, args.api_key)
+        raw_response = chat_json(args.url, args.model, api_key, prompt, args.timeout)
+        parsed = parse_json_response(raw_response)
+        risks = normalize_risks(parsed, l0_state, risk_family_candidates)
+    except (DeepSeekError, ValueError, json.JSONDecodeError) as exc:
+        fallback_used = True
+        fallback_reason = repr(exc)
+        print(f"WARNING: L0 DeepSeek failed; using local risk-family fallback: {exc}", file=sys.stderr)
+        risks = fallback_risks_from_state(l0_state)
 
     write_json(state_path, l0_state)
     write_json(
         risks_path,
         {
             "source_state_file": os.path.abspath(state_path),
+            "fallback_used": fallback_used,
+            "fallback_reason": fallback_reason,
             "risks": risks,
         },
     )
-    write_json(raw_path, {"raw_response": raw_response, "risk_family_candidates": risk_family_candidates})
+    if raw_response is not None:
+        write_json(raw_path, {"raw_response": raw_response, "risk_family_candidates": risk_family_candidates})
+    if fallback_used:
+        write_json(
+            error_path,
+            {
+                "model": args.model,
+                "url": args.url,
+                "error": fallback_reason,
+                "risk_family_candidates": risk_family_candidates,
+                "fallback": "fallback_risks_from_state",
+            },
+        )
 
     print(f"Saved L0 state: {os.path.abspath(state_path)}")
     print(f"Saved L1 risks: {os.path.abspath(risks_path)}")

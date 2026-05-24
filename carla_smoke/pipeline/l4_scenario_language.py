@@ -15,6 +15,7 @@ try:
     from l4 import (
         DEFAULT_DEEPSEEK_MODEL,
         DEFAULT_DEEPSEEK_URL,
+        DEFAULT_API_KEY_ENV,
         build_config,
         chain_output_dir,
         chains_from_data,
@@ -31,6 +32,7 @@ except ImportError:
     from .l4 import (
         DEFAULT_DEEPSEEK_MODEL,
         DEFAULT_DEEPSEEK_URL,
+        DEFAULT_API_KEY_ENV,
         build_config,
         chain_output_dir,
         chains_from_data,
@@ -1431,7 +1433,7 @@ def run_spawn_semantic_check(args, config, primitives, images_dir, report_path):
         "如果主对象没有按动作原语要求出现在合理相对位置，passed=false。\n\n输入 JSON：\n"
         + json.dumps(payload, ensure_ascii=False, indent=2)
     )
-    api_key = get_api_key(args.api_key_env, args.env_file)
+    api_key = get_api_key(args.api_key_env, args.env_file, getattr(args, "api_key", None))
     raw_response = chat_json(args.plan_url, args.plan_model, api_key, prompt, args.plan_timeout)
     parsed = parse_json_response(raw_response)
     report = {
@@ -1766,7 +1768,8 @@ def main():
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
     parser.add_argument("--plan-model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--plan-url", default=DEFAULT_DEEPSEEK_URL)
-    parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
+    parser.add_argument("--api-key-env", default=DEFAULT_API_KEY_ENV)
+    parser.add_argument("--api-key", default=None, help="Explicit API key. Prefer .env/API_KEY_ENV for shared runs.")
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--plan-timeout", type=float, default=300.0)
     parser.add_argument("--validate-event-trace", action="store_true")

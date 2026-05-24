@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small DeepSeek chat-completions client for the CARLA risk pipeline."""
+"""Small OpenAI-compatible chat-completions client for the CARLA risk pipeline."""
 
 import json
 import os
@@ -7,8 +7,9 @@ import urllib.error
 import urllib.request
 
 
-DEFAULT_DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro"
+DEFAULT_DEEPSEEK_URL = "https://aihubmix.com/v1/chat/completions"
+DEFAULT_DEEPSEEK_MODEL = "glm-5.1"
+DEFAULT_API_KEY_ENV = "AIHUBMIX_API_KEY"
 
 
 class DeepSeekError(RuntimeError):
@@ -50,22 +51,28 @@ def load_env_file(path=None, override=False):
     return env_path
 
 
-def get_api_key(env_name, env_file=None):
+def get_api_key(env_name=DEFAULT_API_KEY_ENV, env_file=None, explicit_key=None):
+    if explicit_key:
+        return explicit_key
     # Prefer the project .env over a stale exported shell variable. This pipeline is
     # usually launched from long-lived conda shells where old API keys can linger.
     load_env_file(env_file, override=True)
     api_key = os.environ.get(env_name)
     if not api_key:
-        hint = f" Put {env_name}=<your key> in .env or export it in the shell."
+        hint = f" Put {env_name}=<your key> in .env, export it in the shell, or pass --api-key."
         raise DeepSeekError(f"Missing API key.{hint}")
     return api_key
 
 
-def chat_json(url, model, api_key, prompt, timeout, temperature=0.2):
+def chat_json(url, model, api_key, prompt, timeout, temperature=1.0, max_tokens=65536):
+    if model in {"GLM5.1", "glm5.1"}:
+        model = "glm-5.1"
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": temperature,
+        "max_tokens": max_tokens,
+        "thinking": {"type": "enabled"},
         "response_format": {"type": "json_object"},
         "stream": False,
     }

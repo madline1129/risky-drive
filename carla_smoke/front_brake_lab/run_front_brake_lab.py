@@ -28,6 +28,7 @@ def add_pipeline_path():
 add_pipeline_path()
 
 from risk_library import action_primitive_by_id, risk_type_by_id  # noqa: E402
+from deepseek_client import DEFAULT_API_KEY_ENV, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL  # noqa: E402
 from l4_scenario_language import (  # noqa: E402
     build_semantic_primitives,
     prepare_workspace,
@@ -234,7 +235,7 @@ def main():
     parser.add_argument("--brake-intensity", type=float, default=1.0)
     parser.add_argument("--min-speed-drop-mps", type=float, default=1.0)
     parser.add_argument("--opencode-bin", default="opencode")
-    parser.add_argument("--opencode-model", default="deepseek-v4-pro")
+    parser.add_argument("--opencode-model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
     parser.add_argument("--spawn-check", dest="spawn_check", action="store_true", default=True)
     parser.add_argument("--no-spawn-check", dest="spawn_check", action="store_false")
@@ -242,10 +243,11 @@ def main():
     parser.add_argument("--no-spawn-semantic-check", dest="spawn_semantic_check", action="store_false")
     parser.add_argument("--spawn-check-frames", type=int, default=8)
     parser.add_argument("--spawn-check-save-every", type=int, default=1)
-    parser.add_argument("--plan-model", default="deepseek-v4-pro")
-    parser.add_argument("--plan-url", default="https://api.deepseek.com/chat/completions")
+    parser.add_argument("--plan-model", default=DEFAULT_DEEPSEEK_MODEL)
+    parser.add_argument("--plan-url", default=DEFAULT_DEEPSEEK_URL)
     parser.add_argument("--plan-timeout", type=float, default=300.0)
-    parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
+    parser.add_argument("--api-key-env", default=DEFAULT_API_KEY_ENV)
+    parser.add_argument("--api-key", default=None, help="Explicit API key. Prefer .env/API_KEY_ENV for shared runs.")
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--validate-event-trace", action="store_true")

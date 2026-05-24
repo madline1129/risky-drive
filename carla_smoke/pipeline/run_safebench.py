@@ -8,7 +8,7 @@ import subprocess
 import sys
 from datetime import datetime
 
-from deepseek_client import DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL
+from deepseek_client import DEFAULT_API_KEY_ENV, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL
 
 
 def repo_root_from_this_file():
@@ -20,8 +20,22 @@ def timestamp():
 
 
 def run_command(command):
-    print("\n$ " + " ".join(command))
+    print("\n$ " + " ".join(redact_command(command)))
     subprocess.run(command, check=True)
+
+
+def redact_command(command):
+    redacted = []
+    hide_next = False
+    for item in command:
+        if hide_next:
+            redacted.append("<redacted>")
+            hide_next = False
+            continue
+        redacted.append(item)
+        if item == "--api-key":
+            hide_next = True
+    return redacted
 
 
 def write_manifest(path, data):
@@ -99,8 +113,9 @@ def main():
     parser.add_argument("--sequence-capture", dest="single_random_frame", action="store_false", help="Capture the old saved-frame sequence instead of a single random frame.")
     parser.add_argument("--scenario-hint", default="")
     parser.add_argument("--model", default=DEFAULT_DEEPSEEK_MODEL)
-    parser.add_argument("--deepseek-url", default=DEFAULT_DEEPSEEK_URL)
-    parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
+    parser.add_argument("--deepseek-url", "--llm-url", dest="deepseek_url", default=DEFAULT_DEEPSEEK_URL)
+    parser.add_argument("--api-key-env", default=DEFAULT_API_KEY_ENV)
+    parser.add_argument("--api-key", default=None, help="Explicit API key. Prefer .env/API_KEY_ENV for shared runs.")
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--skip-scene", action="store_true", help="Reuse an existing images directory in this run folder.")
     parser.add_argument("--skip-agents", action="store_true", help="Only capture the SafeBench-derived CARLA scene.")
@@ -210,6 +225,8 @@ def main():
         ]
         if args.env_file:
             l0_command.extend(["--env-file", args.env_file])
+        if args.api_key:
+            l0_command.extend(["--api-key", args.api_key])
         ego_log = os.path.join(image_dir, "ego_log.csv")
         if os.path.exists(ego_log):
             l0_command.extend(["--ego-log", ego_log])
@@ -237,6 +254,8 @@ def main():
             ]
             if args.env_file:
                 l2_command.extend(["--env-file", args.env_file])
+            if args.api_key:
+                l2_command.extend(["--api-key", args.api_key])
             run_command(l2_command)
 
             if not args.skip_l3:
@@ -259,6 +278,8 @@ def main():
                 ]
                 if args.env_file:
                     l3_command.extend(["--env-file", args.env_file])
+                if args.api_key:
+                    l3_command.extend(["--api-key", args.api_key])
                 run_command(l3_command)
 
                 if not args.skip_l4:
@@ -320,6 +341,8 @@ def main():
                     ]
                     if args.env_file:
                         l4_command.extend(["--env-file", args.env_file])
+                    if args.api_key:
+                        l4_command.extend(["--api-key", args.api_key])
                     if args.l4_all_chains:
                         l4_command.append("--all-chains")
                         if args.continue_on_chain_error:

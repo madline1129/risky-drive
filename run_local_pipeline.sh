@@ -24,17 +24,19 @@ SCENARIO_INDEX="${SCENARIO_INDEX:-0}"
 SCENE_SAMPLE_ATTEMPTS="${SCENE_SAMPLE_ATTEMPTS:-20}"
 SEED="${SEED:-7}"
 WEATHER="${WEATHER:-ClearNoon}"
-MODEL="${MODEL:-deepseek-v4-pro}"
-OPENCODE_MODEL="${OPENCODE_MODEL:-deepseek-v4-pro}"
-API_KEY_ENV="${API_KEY_ENV:-DEEPSEEK_API_KEY}"
+MODEL="${MODEL:-glm-5.1}"
+OPENCODE_MODEL="${OPENCODE_MODEL:-glm-5.1}"
+API_KEY_ENV="${API_KEY_ENV:-AIHUBMIX_API_KEY}"
+API_KEY="${API_KEY:-}"
 OPENCODE_BIN="${OPENCODE_BIN:-opencode}"
 QUICK="${QUICK:-1}"
 HOST="${HOST:-127.0.0.1}"
 TIMEOUT="${TIMEOUT:-300}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
-if [[ -z "${DEEPSEEK_API_KEY:-}" && "${API_KEY_ENV}" == "DEEPSEEK_API_KEY" ]]; then
-  echo "DEEPSEEK_API_KEY is not set." >&2
+if [[ -z "${API_KEY}" && -z "${AIHUBMIX_API_KEY:-}" && "${API_KEY_ENV}" == "AIHUBMIX_API_KEY" ]] \
+  && ! grep -q '^AIHUBMIX_API_KEY=' "$REPO_ROOT/.env" 2>/dev/null; then
+  echo "AIHUBMIX_API_KEY is not set. Export it, put it in .env, or set API_KEY." >&2
   exit 1
 fi
 
@@ -87,6 +89,9 @@ PIPELINE_CMD=(
   --api-key-env "$API_KEY_ENV"
   --workdir-root "$WORKDIR_ROOT"
 )
+if [[ -n "$API_KEY" ]]; then
+  CMD+=(--api-key "$API_KEY")
+fi
 
 if [[ -n "$SCENIC_FILE" ]]; then
   PIPELINE_CMD+=(--scenic-file "$SCENIC_FILE")

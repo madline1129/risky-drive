@@ -9,6 +9,7 @@ try:
     from deepseek_client import (
         DEFAULT_DEEPSEEK_MODEL,
         DEFAULT_DEEPSEEK_URL,
+        DEFAULT_API_KEY_ENV,
         chat_json,
         get_api_key,
         parse_json_response,
@@ -18,6 +19,7 @@ except ImportError:
     from .deepseek_client import (
         DEFAULT_DEEPSEEK_MODEL,
         DEFAULT_DEEPSEEK_URL,
+        DEFAULT_API_KEY_ENV,
         chat_json,
         get_api_key,
         parse_json_response,
@@ -135,6 +137,8 @@ def copy_tree_contents(src_dir, dst_dir):
 def normalize_opencode_model_name(model):
     if not model:
         return model
+    if model == "glm-5.1":
+        return "glm-5.1"
     if model == "deepseek-v4-pro":
         return "deepseek/deepseek-v4-pro"
     if model == "deepseek-v4-flash":
@@ -205,7 +209,7 @@ def build_l4_plan_agent_prompt(chain, l0_state):
 
 def run_l4_plan_agent(args, chain, l0_state):
     prompt = build_l4_plan_agent_prompt(chain, l0_state)
-    api_key = get_api_key(args.api_key_env, args.env_file)
+    api_key = get_api_key(args.api_key_env, args.env_file, getattr(args, "api_key", None))
     raw_response = chat_json(args.plan_url, args.plan_model, api_key, prompt, args.plan_timeout)
     return parse_json_response(raw_response), raw_response
 
