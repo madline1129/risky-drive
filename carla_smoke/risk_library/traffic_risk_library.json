@@ -150,11 +150,14 @@
   "action_primitives": [
     {
       "id": "front_vehicle_brake_after_trigger",
-      "controlled_actor_role": "front_vehicle",
+      "actor_role": "front_vehicle",
       "motion_frame": "lane_following",
-      "velocity_vector": {"speed_policy": "decelerate_to_target", "target_speed_mps": 0.0},
-      "direction_policy": "keep_lane",
-      "stop_condition": "target_speed_or_timeout",
+      "front_initial_speed_mps": 8.0,
+      "target_speed_mps": 0.0,
+      "brake_intensity": 1.0,
+      "trigger_frame": 40,
+      "trigger_seconds": 2.0,
+      "direction": {"frame": "ego_local", "longitudinal_m": 14.0, "lateral_m": 0.0, "heading_delta_deg": 0.0},
       "acceptance_checks": ["front_vehicle_speed_drop", "front_vehicle_initially_ahead"]
     },
     {

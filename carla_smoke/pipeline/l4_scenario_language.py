@@ -18,8 +18,11 @@ try:
         build_config,
         chain_output_dir,
         chains_from_data,
+        chat_json,
+        get_api_key,
         normalize_opencode_model_name,
         opencode_skills_dir,
+        parse_json_response,
         read_json,
         select_chain,
         write_json,
@@ -31,8 +34,11 @@ except ImportError:
         build_config,
         chain_output_dir,
         chains_from_data,
+        chat_json,
+        get_api_key,
         normalize_opencode_model_name,
         opencode_skills_dir,
+        parse_json_response,
         read_json,
         select_chain,
         write_json,
@@ -310,7 +316,7 @@ def build_semantic_primitives(config, l0_state=None):
     front_actor = actor_summary(nearest_front_actor_from_l0(l0_state))
     trigger_frame = int(config.get("trigger_frame", 20) or 20)
     scenic_context = scenic_context_from_l0(l0_state)
-    action = config.get("action") or {}
+    action = config.get("action_primitive") or {}
 
     primitives = [
         primitive(
@@ -355,12 +361,14 @@ def build_semantic_primitives(config, l0_state=None):
             [
                 primitive("follow_lane", actor="ego", until_frame=trigger_frame),
                 primitive(
-                "front_vehicle_brake",
-                actor="primary_risk_actor",
-                trigger_frame=trigger_frame,
+                    "front_vehicle_brake",
+                    actor="primary_risk_actor",
+                    trigger_frame=trigger_frame,
+                    front_initial_speed_mps=action.get("front_initial_speed_mps"),
                     target_speed_mps=action.get("target_speed_mps", 0.0),
                     brake_intensity=action.get("brake_intensity"),
-                    deceleration_mps2=action.get("deceleration_mps2"),
+                    trigger_seconds=action.get("trigger_seconds"),
+                    direction=action.get("direction"),
                     must_be_visible=True,
                 ),
                 primitive("record_expectation", expectation="front vehicle decelerates or stops while ego is still approaching"),
@@ -452,6 +460,7 @@ def build_semantic_primitives(config, l0_state=None):
         "risk_type_id": config.get("risk_type_id"),
         "primary_action_primitive_id": config.get("primary_action_primitive_id"),
         "action_primitive": config.get("action_primitive"),
+        "action_primitives": config.get("action_primitives") or [],
         "participant_actions": config.get("participant_actions") or [],
         "scenario_type": scenario_type,
         "source_l3_chain_id": config.get("source_l3_chain_id"),
@@ -462,13 +471,12 @@ def build_semantic_primitives(config, l0_state=None):
     }
 
 
-def prepare_workspace(args, config_path, primitives_path):
+def prepare_workspace(args, task_source_path, primitives_path):
     workspace = os.path.join(args.output_dir, "opencode_scenario_language_workspace")
     os.makedirs(workspace, exist_ok=True)
-    workspace_config = os.path.join(workspace, "scenario_config.json")
+    workspace_task = os.path.join(workspace, "l4_task.json")
     workspace_primitives = os.path.join(workspace, "semantic_primitives.json")
     output_scenic = os.path.join(workspace, "generated_risk_scene.scenic")
-    shutil.copy2(config_path, workspace_config)
     shutil.copy2(primitives_path, workspace_primitives)
     if args.l0_json:
         shutil.copy2(args.l0_json, os.path.join(workspace, "l0_state.json"))
@@ -513,7 +521,7 @@ def prepare_workspace(args, config_path, primitives_path):
         f.write(
             "# OpenCode Workspace Instructions\n\n"
             "MANDATORY SKILL: l4-scenario-language-codegen.\n"
-            "Read l4_task.json as the single business input; scenario_config.json and semantic_primitives.json are debug mirrors only.\n"
+            "Read l4_task.json as the single business input; semantic_primitives.json is only a primitive trace.\n"
             "Generate Scenic scenario-language code only; do not generate CARLA Python code.\n"
             "Edit only generated_risk_scene.scenic.\n"
             "The file must use the absolute map path from l4_task.scene_context.map_absolute_path.\n"
@@ -522,9 +530,9 @@ def prepare_workspace(args, config_path, primitives_path):
             "Write event behavior so semantic_validation in event_trace.json can pass after execution.\n"
             "The file must be executable by Scenic/CARLA.\n"
         )
-    config = read_json(workspace_config)
+    config = read_json(task_source_path)
     write_json(
-        os.path.join(workspace, "l4_task.json"),
+        workspace_task,
         {
             "level": "L4OpenCodeTask",
             "description": "Single self-contained task file for OpenCode Scenic generation.",
@@ -560,11 +568,9 @@ def prepare_workspace(args, config_path, primitives_path):
                 "l0_state": l0_state,
             },
             "actions": {
-                "primary_action_primitive_id": config.get("primary_action_primitive_id"),
-                "primary_action_primitive": config.get("action_primitive"),
-                "action": config.get("action"),
+                "action_primitive": config.get("action_primitive"),
+                "action_primitives": config.get("action_primitives") or [],
                 "participant_actions": config.get("participant_actions") or [],
-                "trigger_frame": config.get("trigger_frame"),
             },
             "acceptance_criteria": config.get("success_criteria"),
             "output_contract": config.get("event_contract"),
@@ -573,17 +579,16 @@ def prepare_workspace(args, config_path, primitives_path):
     write_json(
         os.path.join(workspace, "opencode_inputs.json"),
         {
-            "l4_task": os.path.join(workspace, "l4_task.json"),
-            "scenario_config": workspace_config,
+            "l4_task": workspace_task,
             "semantic_primitives": workspace_primitives,
             "l0_state": os.path.join(workspace, "l0_state.json"),
             "output_scenic": output_scenic,
         },
     )
-    return workspace, workspace_config, workspace_primitives, output_scenic
+    return workspace, workspace_task, workspace_primitives, output_scenic
 
 
-def opencode_prompt(config_path, primitives_path, output_scenic):
+def opencode_prompt(task_path, primitives_path, output_scenic):
     task_path = os.path.join(os.path.dirname(output_scenic), "l4_task.json")
     return f"""MANDATORY SKILL: l4-scenario-language-codegen.
 
@@ -596,20 +601,20 @@ Task:
 
 Requirements:
 - Generate Scenario/Scenic language, not Python.
-- Follow l4_task.actions.primary_action_primitive as the hard action primitive.
+- Follow l4_task.actions.action_primitive as the hard action primitive.
 - Use l4_task.scene_context.map_absolute_path exactly in `param map = localPath(...)`.
 - Use the precomputed `actor.scenic_position_expression` and `actor.scenic_heading` from l4_task; never convert raw CARLA x/y/yaw yourself.
 - Prefer `actor.relative_to_ego` for L0 actors. If exact placement fails, use `same_side_search_policy` and keep the original left/right side.
 - Do not over-constrain Scenic placement around one absolute point. Absolute L0 poses are hints; ego-relative same-side geometry is the acceptance target.
 - Preserve l4_task.risk.scenario_type exactly.
-- Preserve primary actor kind/type, ego-relative geometry, action primitive, velocity vector, direction policy, and trigger timing.
+- Preserve primary actor kind/type, ego-relative geometry, concrete action primitive, numeric direction, speed, brake intensity, and trigger timing.
 - L0 absolute coordinates are hints; relative geometry is authoritative.
 - The generated Scenic must run through carla_smoke/scenes/safebench_scenic_scene.py.
 - Do not write Markdown. Do not ask questions. Edit only generated_risk_scene.scenic.
 """
 
 
-def opencode_repair_prompt(config_path, primitives_path, output_scenic, repair_feedback):
+def opencode_repair_prompt(task_path, primitives_path, output_scenic, repair_feedback):
     task_path = os.path.join(os.path.dirname(output_scenic), "l4_task.json")
     return f"""The generated Scenic scenario failed during Scenic/CARLA execution.
 
@@ -632,7 +637,7 @@ Repair the Scenic file in place.
 - Do not flip actor.relative_to_ego.side. If a left-side actor does not fit, search only left-side distances; if a right-side actor does not fit, search only right-side distances.
 - If exact absolute placement fails or Scenic cannot sample the scene, stop hard-coding the failed absolute point. Use ego-relative placement and same-side nearby search while preserving actor type, side, and front/rear relation.
 - If this is a semantic validation failure, use the failed checks in Repair feedback as the repair target. Each failed check includes target, actual, and reason; edit the Scenic scenario so those checks pass.
-- Do not satisfy semantic validation by changing l4_task.json, scenario_config.json, semantic_primitives.json, event_trace.json, actor type, or scenario_type. Fix only generated_risk_scene.scenic.
+- Do not satisfy semantic validation by changing l4_task.json, semantic_primitives.json, event_trace.json, actor type, or scenario_type. Fix only generated_risk_scene.scenic.
 - If a parameter used in range(...) can be float, cast it to int(...) or replace it with a fixed integer.
 - Do not switch to Python code.
 - Do not write Markdown. Edit only generated_risk_scene.scenic.
@@ -680,7 +685,7 @@ def build_execution_repair_feedback(error_output):
         "issue": "Scenic/CARLA execution failed before a valid event_trace was produced.",
         "evidence": extract_error_line(text),
         "repair_requirements": [
-            "Keep scenario_config.scenario_type, primary actor type/kind, trigger frame, and intended action unchanged.",
+            "Keep l4_task.risk.scenario_type, primary actor type/kind, trigger frame, and intended action unchanged.",
             "Fix generated_risk_scene.scenic only; do not edit JSON inputs.",
         ],
     }
@@ -768,7 +773,7 @@ def build_semantic_repair_feedback(trace):
         "failed_checks": failed_checks,
         "repair_requirements": [
             "Fix generated_risk_scene.scenic so the failed target/actual checks pass.",
-            "Do not change scenario_type, primary actor type/kind, trigger_frame, scenario_config.json, semantic_primitives.json, or event_trace.json.",
+            "Do not change scenario_type, primary actor type/kind, trigger_frame, l4_task.json, semantic_primitives.json, or event_trace.json.",
             "If an absolute pose is hard to satisfy, use same-side ego-relative placement while preserving the intended risk semantics.",
         ],
     }
@@ -780,11 +785,11 @@ def build_repair_feedback(error_output, trace=None):
     return build_execution_repair_feedback(error_output)
 
 
-def run_opencode(args, config_path, primitives_path, output_scenic):
+def run_opencode(args, task_path, primitives_path, output_scenic):
     opencode_bin = shutil.which(args.opencode_bin)
     if not opencode_bin:
         raise RuntimeError(f"opencode binary not found: {args.opencode_bin}")
-    prompt = opencode_prompt(config_path, primitives_path, output_scenic)
+    prompt = opencode_prompt(task_path, primitives_path, output_scenic)
     prompt_path = os.path.join(os.path.dirname(output_scenic), "opencode_prompt.txt")
     with open(prompt_path, "w", encoding="utf-8") as f:
         f.write(prompt)
@@ -804,11 +809,11 @@ def run_opencode(args, config_path, primitives_path, output_scenic):
         raise RuntimeError(f"opencode completed but did not create expected Scenic file: {output_scenic}")
 
 
-def repair_opencode(args, config_path, primitives_path, output_scenic, repair_feedback):
+def repair_opencode(args, task_path, primitives_path, output_scenic, repair_feedback):
     opencode_bin = shutil.which(args.opencode_bin)
     if not opencode_bin:
         raise RuntimeError(f"opencode binary not found: {args.opencode_bin}")
-    prompt = opencode_repair_prompt(config_path, primitives_path, output_scenic, repair_feedback)
+    prompt = opencode_repair_prompt(task_path, primitives_path, output_scenic, repair_feedback)
     prompt_path = os.path.join(os.path.dirname(output_scenic), "opencode_repair_prompt.txt")
     with open(prompt_path, "w", encoding="utf-8") as f:
         f.write(prompt)
@@ -1312,7 +1317,163 @@ def run_scenic_capture(args, scenic_file, images_dir):
     run_command(command, capture_output=True)
 
 
-def run_scenic_with_repair(args, config_path, primitives_path, scenic_file, images_dir):
+def scenic_actor_class(actor):
+    kind = str((actor or {}).get("kind") or "").lower()
+    type_id = str((actor or {}).get("type_id") or "").lower()
+    if kind in {"pedestrian", "walker", "cyclist"} or type_id.startswith("walker."):
+        return "Pedestrian"
+    return "Car"
+
+
+def scenic_actor_blueprint(actor, default_model):
+    type_id = (actor or {}).get("type_id")
+    if type_id:
+        return str(type_id)
+    return default_model
+
+
+def require_spawn_pose(actor, label):
+    position = (actor or {}).get("scenic_position_expression")
+    heading = (actor or {}).get("scenic_heading") or "0 deg"
+    if not position:
+        raise RuntimeError(f"spawn check cannot run: {label} missing scenic_position_expression")
+    return position, heading
+
+
+def write_spawn_check_scenic(config, primitives, path):
+    context = next(
+        (
+            item
+            for item in primitives.get("semantic_primitives", [])
+            if isinstance(item, dict) and item.get("primitive") == "set_scene_context"
+        ),
+        {},
+    )
+    ego = next(
+        (
+            item.get("actor")
+            for item in primitives.get("semantic_primitives", [])
+            if isinstance(item, dict) and item.get("primitive") == "spawn_ego"
+        ),
+        {},
+    )
+    primary = primitives.get("primary_actor") or {}
+    ego_pos, ego_heading = require_spawn_pose(ego, "ego")
+    primary_pos, primary_heading = require_spawn_pose(primary, "primary_actor")
+    town = context.get("town") or "Town05"
+    map_path = context.get("map_absolute_path") or scenic_map_absolute_path(town)
+    primary_class = scenic_actor_class(primary)
+    primary_blueprint = scenic_actor_blueprint(primary, "vehicle.nissan.micra")
+    ego_blueprint = scenic_actor_blueprint(ego, "vehicle.lincoln.mkz_2017")
+    lines = [
+        "'''Spawn-only validation generated before OpenCode codegen.'''",
+        f"Town = {json.dumps(town)}",
+        f"param map = localPath({json.dumps(map_path)})",
+        "param carla_map = Town",
+        "model scenic.simulators.carla.model",
+        f"EGO_MODEL = {json.dumps(ego_blueprint)}",
+        "",
+        f"ego = Car at {ego_pos},",
+        f"    with heading {ego_heading},",
+        "    with regionContainedIn None,",
+        "    with blueprint EGO_MODEL",
+        "",
+        f"primary_actor = {primary_class} at {primary_pos},",
+        f"    with heading {primary_heading},",
+        "    with regionContainedIn None,",
+        f"    with blueprint {json.dumps(primary_blueprint)}",
+        "",
+    ]
+    write_text(path, "\n".join(lines))
+
+
+def write_text(path, text):
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text.rstrip() + "\n")
+
+
+def spawn_check_args(args):
+    copied = argparse.Namespace(**vars(args))
+    copied.frames = int(getattr(args, "spawn_check_frames", 8) or 8)
+    copied.save_every = int(getattr(args, "spawn_check_save_every", 1) or 1)
+    copied.warmup_ticks = min(int(getattr(args, "warmup_ticks", 0) or 0), 2)
+    return copied
+
+
+def read_spawn_states(images_dir, limit=5):
+    states = []
+    for path in sorted(glob.glob(os.path.join(images_dir, "state_*.json")))[:limit]:
+        state = read_json(path)
+        state["_file"] = os.path.basename(path)
+        states.append(state)
+    return states
+
+
+def run_spawn_semantic_check(args, config, primitives, images_dir, report_path):
+    states = read_spawn_states(images_dir)
+    payload = {
+        "instruction": "判断出生地点语义是否合理。只检查出生相对关系、主对象类型、是否符合L4动作原语，不检查后续动态行为。",
+        "scenario_type": config.get("scenario_type"),
+        "chain_description": config.get("chain_description"),
+        "direct_physical_outcome": config.get("direct_physical_outcome"),
+        "planned_primary_actor": primitives.get("primary_actor"),
+        "planned_action_primitive": config.get("action_primitive"),
+        "captured_spawn_states": states,
+        "required_output": {
+            "passed": True,
+            "reason": "简短原因",
+            "checks": [{"name": "检查项", "passed": True, "target": "目标", "actual": "实际"}],
+        },
+    }
+    prompt = (
+        "你是 L4 spawn 语义检查 agent。请只输出 JSON。\n"
+        "如果主对象没有按动作原语要求出现在合理相对位置，passed=false。\n\n输入 JSON：\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+    )
+    api_key = get_api_key(args.api_key_env, args.env_file)
+    raw_response = chat_json(args.plan_url, args.plan_model, api_key, prompt, args.plan_timeout)
+    parsed = parse_json_response(raw_response)
+    report = {
+        "kind": "spawn_semantic_check",
+        "model": args.plan_model,
+        "raw_response": raw_response,
+        "result": parsed,
+    }
+    write_json(report_path, report)
+    if not parsed.get("passed"):
+        raise RuntimeError(f"spawn semantic check failed: {parsed.get('reason', parsed)}")
+    return report
+
+
+def run_spawn_check(args, config, primitives, output_dir):
+    if not getattr(args, "spawn_check", True):
+        return None
+    check_dir = os.path.join(output_dir, "spawn_check")
+    scenic_path = os.path.join(check_dir, "spawn_check.scenic")
+    images_dir = os.path.join(check_dir, "images")
+    report_path = os.path.join(check_dir, "spawn_check_report.json")
+    write_spawn_check_scenic(config, primitives, scenic_path)
+    run_scenic_capture(spawn_check_args(args), scenic_path, images_dir)
+    postprocess_images(images_dir)
+    report = {
+        "kind": "spawn_check",
+        "passed": True,
+        "spawn_scenic": os.path.abspath(scenic_path),
+        "images_dir": os.path.abspath(images_dir),
+        "note": "CARLA accepted the spawn-only Scenic file.",
+    }
+    write_json(report_path, report)
+    if getattr(args, "spawn_semantic_check", True):
+        semantic_report_path = os.path.join(check_dir, "spawn_semantic_report.json")
+        semantic_report = run_spawn_semantic_check(args, config, primitives, images_dir, semantic_report_path)
+        report["semantic_report"] = os.path.abspath(semantic_report_path)
+        report["semantic_passed"] = bool((semantic_report.get("result") or {}).get("passed"))
+        write_json(report_path, report)
+    return report
+
+
+def run_scenic_with_repair(args, task_path, primitives_path, scenic_file, images_dir):
     last_error = ""
     for attempt in range(args.opencode_repair_attempts + 1):
         try:
@@ -1323,7 +1484,7 @@ def run_scenic_with_repair(args, config_path, primitives_path, scenic_file, imag
             if attempt >= args.opencode_repair_attempts:
                 raise
             print(f"\nAsking opencode to repair Scenic file ({attempt + 1}/{args.opencode_repair_attempts}).")
-            repair_opencode(args, config_path, primitives_path, scenic_file, build_execution_repair_feedback(last_error))
+            repair_opencode(args, task_path, primitives_path, scenic_file, build_execution_repair_feedback(last_error))
 
 
 def validation_summary(trace):
@@ -1473,8 +1634,8 @@ def write_l4_feedback_report(path, config, before_trace=None, feedback_text="", 
         f.write("\n".join(lines).rstrip() + "\n")
 
 
-def run_scenic_validate_with_repair(args, config_path, primitives_path, scenic_file, images_dir, config, primitives):
-    report_path = os.path.join(os.path.dirname(config_path), "..", "l4_feedback_report.md")
+def run_scenic_validate_with_repair(args, task_path, primitives_path, scenic_file, images_dir, config, primitives):
+    report_path = os.path.join(os.path.dirname(task_path), "..", "l4_feedback_report.md")
     report_dir = os.path.dirname(os.path.abspath(report_path))
     first_trace = None
     feedback_entries = []
@@ -1513,7 +1674,7 @@ def run_scenic_validate_with_repair(args, config_path, primitives_path, scenic_f
                 write_l4_feedback_report(report_path, config, first_trace, feedback_entries, trace, final_error=repair_feedback)
                 raise
             print(f"\nAsking opencode to repair Scenic file ({attempt + 1}/{args.opencode_repair_attempts}).")
-            repair_opencode(args, config_path, primitives_path, scenic_file, repair_feedback)
+            repair_opencode(args, task_path, primitives_path, scenic_file, repair_feedback)
 
 
 def execute_chain(args, chain, l0_state, output_dir):
@@ -1533,19 +1694,23 @@ def execute_chain(args, chain, l0_state, output_dir):
         write_json(os.path.join(output_dir, "l4_plan_agent_raw.json"), plan_agent_raw)
     config["execution_backend"] = "opencode_scenic"
     config["executor"] = "carla_smoke/scenes/safebench_scenic_scene.py"
-    config_path = os.path.join(output_dir, "scenario_config.json")
-    write_json(config_path, config)
+    task_source_path = os.path.join(output_dir, "l4_task_source.json")
+    write_json(task_source_path, config)
 
     primitives = build_semantic_primitives(config, l0_state)
     primitives_path = os.path.join(output_dir, "semantic_primitives.json")
     write_json(primitives_path, primitives)
 
-    workspace, workspace_config, workspace_primitives, output_scenic = prepare_workspace(args, config_path, primitives_path)
-    run_opencode(args, workspace_config, workspace_primitives, output_scenic)
+    spawn_report = None
+    if args.execute:
+        spawn_report = run_spawn_check(args, config, primitives, output_dir)
+
+    workspace, workspace_task, workspace_primitives, output_scenic = prepare_workspace(args, task_source_path, primitives_path)
+    run_opencode(args, workspace_task, workspace_primitives, output_scenic)
 
     images_dir = os.path.join(output_dir, "risk_images")
     if args.execute:
-        run_scenic_validate_with_repair(args, workspace_config, workspace_primitives, output_scenic, images_dir, config, primitives)
+        run_scenic_validate_with_repair(args, workspace_task, workspace_primitives, output_scenic, images_dir, config, primitives)
     else:
         print("Scenario-language execution skipped. Add --execute to run Scenic/CARLA.")
 
@@ -1553,11 +1718,12 @@ def execute_chain(args, chain, l0_state, output_dir):
         "chain_id": chain.get("id"),
         "source_l2_id": chain.get("parent_l2_id"),
         "output_dir": os.path.abspath(output_dir),
-        "scenario_config": os.path.abspath(config_path),
+        "l4_task_source": os.path.abspath(task_source_path),
         "semantic_primitives": os.path.abspath(primitives_path),
         "generated_scenic": os.path.abspath(output_scenic),
         "risk_images": os.path.abspath(images_dir),
         "scenario_type": config.get("scenario_type"),
+        "spawn_check": spawn_report,
     }
 
 
@@ -1589,6 +1755,12 @@ def main():
     parser.add_argument("--weather", default="ClearNoon")
     parser.add_argument("--execute", dest="execute", action="store_true", default=True)
     parser.add_argument("--no-execute", dest="execute", action="store_false")
+    parser.add_argument("--spawn-check", dest="spawn_check", action="store_true", default=True)
+    parser.add_argument("--no-spawn-check", dest="spawn_check", action="store_false")
+    parser.add_argument("--spawn-semantic-check", dest="spawn_semantic_check", action="store_true", default=True)
+    parser.add_argument("--no-spawn-semantic-check", dest="spawn_semantic_check", action="store_false")
+    parser.add_argument("--spawn-check-frames", type=int, default=8)
+    parser.add_argument("--spawn-check-save-every", type=int, default=1)
     parser.add_argument("--opencode-bin", default="opencode")
     parser.add_argument("--opencode-model", default=DEFAULT_DEEPSEEK_MODEL)
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)

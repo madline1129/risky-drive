@@ -31,9 +31,8 @@ PLAN_AGENT_PROMPT_TEMPLATE = """你是 L4 PlanAgent。
 
 硬性要求：
 - 不改写 L3 的核心事件。
-- 如果 L3 已经给出 risk_type_id / primary_trigger_action_id，必须优先沿用；你的任务是选择/实例化风险库动作原语，不要自由发明 action.mode。
-- 如果 L3 / L2 / L1 已经指定 primary_perturbation_object 或 selected_actor，必须沿用这个对象。
-- source="l0_actor" 的对象必须保留 actor_id、type_id、kind、location、rotation、relative_longitudinal_m、relative_lateral_m。
+- 如果 L3 已经给出 risk_type_id / primary_trigger_action_id / action_primitives，必须优先沿用；你的任务是把这些动作原语实例化为具体参数，不要自由发明 action.mode。
+- L3 不负责选择完整物体或出生地点；你必须根据 L0 actors、L3 chain_participants 和 action_primitives 选择 primary_object，并保留所选 L0 actor 的 actor_id、type_id、kind、location、rotation、relative_longitudinal_m、relative_lateral_m。
 - scenario_type 只能是：front_vehicle_brake, cargo_drop, vulnerable_actor_intrusion, road_obstacle_intrusion, side_vehicle_intrusion, ego_action_risk。
 - 只输出 JSON，不要 Markdown。
 
@@ -53,14 +52,20 @@ PLAN_AGENT_PROMPT_TEMPLATE = """你是 L4 PlanAgent。
     "must_drive_primary_event": true,
     "selection_reason": "引用 L0/L3 字段说明"
   },
-  "action": {
-    "mode": "front_vehicle_brake_after_trigger",
-    "speed_mps": 2.2,
-    "velocity_vector": {"speed_policy": "decelerate_to_target", "target_speed_mps": 0.0},
-    "direction_policy": "keep_lane",
-    "brake_intensity": 1.0,
+  "action_primitive": {
+    "id": "front_vehicle_brake_after_trigger",
+    "actor_role": "front_vehicle",
+    "motion_frame": "lane_following",
+    "front_initial_speed_mps": 8.0,
     "target_speed_mps": 0.0,
-    "deceleration_mps2": 6.0
+    "brake_intensity": 1.0,
+    "trigger_frame": 40,
+    "direction": {
+      "frame": "ego_local",
+      "longitudinal_m": 14.0,
+      "lateral_m": 0.0,
+      "heading_delta_deg": 0.0
+    }
   },
   "expected_visual_result": "一句话说明生成出来应该看到什么",
   "success_criteria": {
@@ -130,6 +135,8 @@ def copy_tree_contents(src_dir, dst_dir):
 def normalize_opencode_model_name(model):
     if not model:
         return model
+    if model == "deepseek-v4-pro":
+        return "deepseek/deepseek-v4-pro"
     if model == "deepseek-v4-flash":
         return "deepseek/deepseek-v4-flash"
     if "/" in model:
@@ -144,6 +151,15 @@ def actor_id(value):
         return int(value)
     except (TypeError, ValueError):
         return value
+
+
+def as_float(value, default=None):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def actor_by_id(l0_state, wanted_id):
@@ -180,6 +196,7 @@ def build_l4_plan_agent_prompt(chain, l0_state):
             "risk_family": chain.get("risk_family") or risk_type.get("family"),
             "risk_type": risk_type,
             "primary_action_primitive": action_primitive,
+            "l3_action_primitives": chain.get("action_primitives") or [],
             "participant_actions": chain.get("participant_actions") or [],
         },
     }
@@ -220,33 +237,108 @@ def primary_from_chain_or_plan(chain, plan_output, l0_state):
     return {}
 
 
-def default_action(scenario_type, plan_output):
-    action = dict(plan_output.get("action") or {})
+def concrete_action_primitive(
+    scenario_type,
+    primitive_id,
+    library_primitive,
+    plan_output,
+    primary_actor,
+    trigger_frame,
+    pre_trigger_seconds=2.0,
+    source_timestep=0.05,
+):
+    plan_primitive = dict(plan_output.get("action_primitive") or {})
+    legacy_action = dict(plan_output.get("action") or {})
+    library_primitive = dict(library_primitive or {})
+    base = {}
+    if primitive_id:
+        base["id"] = primitive_id
+    base["actor_role"] = (
+        plan_primitive.get("actor_role")
+        or library_primitive.get("actor_role")
+        or library_primitive.get("controlled_actor_role")
+        or legacy_action.get("controlled_actor")
+        or "primary_risk_actor"
+    )
+    base["motion_frame"] = (
+        plan_primitive.get("motion_frame")
+        or legacy_action.get("motion_frame")
+        or library_primitive.get("motion_frame")
+    )
     if scenario_type == "front_vehicle_brake":
-        action.setdefault("mode", "brake_or_decelerate_after_trigger")
-        action.setdefault("brake_intensity", 1.0)
-        action.setdefault("target_speed_mps", 0.0)
-        action.setdefault("deceleration_mps2", 6.0)
-    elif scenario_type == "vulnerable_actor_intrusion":
-        action.setdefault("mode", "move_vulnerable_actor_into_ego_lane")
-        action.setdefault("speed_mps", 2.2)
-        action.setdefault("must_approach_ego", True)
-        action.setdefault("must_enter_ego_lane", True)
-    elif scenario_type == "side_vehicle_intrusion":
-        action.setdefault("mode", "move_side_vehicle_toward_ego_lane")
-        action.setdefault("minimum_lateral_shift_m", 1.2)
-        action.setdefault("must_keep_same_l0_actor", True)
-    elif scenario_type == "cargo_drop":
-        action.setdefault("mode", "drop_or_move_payload_toward_ego_path")
-        action.setdefault("payload_count_min", 1)
-    elif scenario_type == "road_obstacle_intrusion":
-        action.setdefault("mode", "place_or_move_obstacle_into_ego_path")
-        action.setdefault("obstacle_count_min", 1)
-    elif scenario_type == "ego_action_risk":
-        action.setdefault("mode", "ego_continue_without_braking")
-        action.setdefault("controlled_actor", "ego")
-        action.setdefault("must_reduce_distance_to_hazard", True)
-    return action
+        rel = primary_actor.get("relative_to_ego") if isinstance(primary_actor, dict) else {}
+        if not isinstance(rel, dict):
+            rel = {}
+        actor_longitudinal = primary_actor.get("relative_longitudinal_m") if isinstance(primary_actor, dict) else None
+        actor_lateral = primary_actor.get("relative_lateral_m") if isinstance(primary_actor, dict) else None
+        actor_speed = primary_actor.get("speed_mps") if isinstance(primary_actor, dict) else None
+        library_direction = library_primitive.get("direction") if isinstance(library_primitive.get("direction"), dict) else {}
+        plan_direction = plan_primitive.get("direction") if isinstance(plan_primitive.get("direction"), dict) else {}
+        longitudinal_m = as_float(
+            plan_direction.get("longitudinal_m", plan_primitive.get("longitudinal_m")),
+            as_float(
+                rel.get("longitudinal_m"),
+                as_float(actor_longitudinal, as_float(library_direction.get("longitudinal_m"), 14.0)),
+            ),
+        )
+        lateral_m = as_float(
+            plan_direction.get("lateral_m", plan_primitive.get("lateral_m")),
+            as_float(rel.get("lateral_m"), as_float(actor_lateral, as_float(library_direction.get("lateral_m"), 0.0))),
+        )
+        initial_speed = as_float(
+            plan_primitive.get("front_initial_speed_mps"),
+            as_float(
+                legacy_action.get("front_initial_speed_mps"),
+                as_float(legacy_action.get("speed_mps"), as_float(actor_speed, as_float(library_primitive.get("front_initial_speed_mps"), 8.0))),
+            ),
+        )
+        target_speed = as_float(
+            plan_primitive.get("target_speed_mps"),
+            as_float(legacy_action.get("target_speed_mps"), as_float(library_primitive.get("target_speed_mps"), 0.0)),
+        )
+        brake_intensity = as_float(
+            plan_primitive.get("brake_intensity"),
+            as_float(legacy_action.get("brake_intensity"), as_float(library_primitive.get("brake_intensity"), 1.0)),
+        )
+        concrete_trigger_frame = int(
+            plan_primitive.get("trigger_frame")
+            or legacy_action.get("trigger_frame")
+            or library_primitive.get("trigger_frame")
+            or trigger_frame
+        )
+        concrete = {
+            **base,
+            "front_initial_speed_mps": initial_speed,
+            "target_speed_mps": target_speed,
+            "brake_intensity": brake_intensity,
+            "trigger_frame": concrete_trigger_frame,
+            "trigger_seconds": as_float(
+                plan_primitive.get("trigger_seconds"),
+                as_float(
+                    library_primitive.get("trigger_seconds"),
+                    round(float(concrete_trigger_frame) * float(source_timestep or 0.05), 3),
+                ),
+            ),
+            "direction": {
+                "frame": "ego_local",
+                "longitudinal_m": longitudinal_m,
+                "lateral_m": lateral_m,
+                "heading_delta_deg": as_float(plan_direction.get("heading_delta_deg", plan_primitive.get("heading_delta_deg")), 0.0),
+            },
+            "acceptance_checks": library_primitive.get("acceptance_checks") or [
+                "front_vehicle_speed_drop",
+                "front_vehicle_initially_ahead",
+            ],
+        }
+        return {key: value for key, value in concrete.items() if value is not None}
+
+    concrete = dict(library_primitive)
+    concrete.update({key: value for key, value in plan_primitive.items() if value is not None})
+    concrete.update({key: value for key, value in legacy_action.items() if key not in concrete and value is not None})
+    if primitive_id:
+        concrete["id"] = primitive_id
+    concrete.setdefault("trigger_frame", int(trigger_frame))
+    return concrete
 
 
 def default_success_criteria(scenario_type, plan_output):
@@ -326,16 +418,17 @@ def build_config(
         raise ValueError("L4 PlanAgent output missing scenario_type.")
 
     primary_actor = primary_from_chain_or_plan(chain, plan_output, l0_state or {})
-    action = default_action(scenario_type, plan_output)
-    if action_primitive_id:
-        action.setdefault("mode", action_primitive_id)
-        action["action_primitive_id"] = action_primitive_id
-    if action_primitive:
-        action.setdefault("velocity_vector", action_primitive.get("velocity_vector"))
-        action.setdefault("direction_policy", action_primitive.get("direction_policy"))
-        action.setdefault("motion_frame", action_primitive.get("motion_frame"))
     trigger_frame = int(local_trigger_frame or 20)
-    action["trigger_frame"] = trigger_frame
+    action_primitive = concrete_action_primitive(
+        scenario_type,
+        action_primitive_id,
+        action_primitive,
+        plan_output,
+        primary_actor,
+        trigger_frame,
+        pre_trigger_seconds=pre_trigger_seconds,
+        source_timestep=source_timestep,
+    )
     success_criteria = default_success_criteria(scenario_type, plan_output)
     for key, value in (chain_risk_type.get("acceptance") or {}).items():
         success_criteria.setdefault(key, value)
@@ -349,15 +442,15 @@ def build_config(
         "risk_type_id": risk_type_id,
         "primary_action_primitive_id": action_primitive_id,
         "action_primitive": action_primitive,
+        "action_primitives": chain.get("action_primitives") or [],
         "participant_actions": chain.get("participant_actions") or [],
         "scenario_type": scenario_type,
-        "trigger_frame": trigger_frame,
+        "trigger_frame": action_primitive.get("trigger_frame", trigger_frame),
         "chain_description": chain.get("chain_description"),
         "direct_physical_outcome": chain.get("direct_physical_outcome"),
         "expected_visual_result": plan_output.get("expected_visual_result"),
         "translation_reason": plan_output.get("translation_reason"),
         "primary_actor": primary_actor,
-        "action": action,
         "success_criteria": success_criteria,
         "event_contract": event_contract(scenario_type, success_criteria),
         "execution_backend": "opencode_scenic",

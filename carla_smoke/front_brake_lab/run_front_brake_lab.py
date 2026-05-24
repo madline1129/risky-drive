@@ -4,7 +4,7 @@
 This keeps the real L4 execution shape for one primitive only:
 
 L0 optional input -> select nearest front vehicle -> instantiate the shared
-front_vehicle_brake_after_trigger primitive -> scenario_config/semantic_primitives
+front_vehicle_brake_after_trigger primitive -> l4_task_source/semantic_primitives
 -> l4_task.json -> OpenCode generates Scenic -> CARLA capture
 -> reconstruct/validate event_trace -> OpenCode repair feedback.
 """
@@ -32,6 +32,7 @@ from l4_scenario_language import (  # noqa: E402
     build_semantic_primitives,
     prepare_workspace,
     run_opencode,
+    run_spawn_check,
     run_scenic_validate_with_repair,
 )
 
@@ -170,6 +171,24 @@ def build_config(args, l0_state, selected_actor):
     )
 
     trigger_frame = int(round(args.trigger_seconds / args.timestep))
+    action_primitive = {
+        "id": "front_vehicle_brake_after_trigger",
+        "actor_role": "front_vehicle",
+        "motion_frame": primitive.get("motion_frame", "lane_following"),
+        "front_initial_speed_mps": front_speed_mps,
+        "target_speed_mps": 0.0,
+        "brake_intensity": args.brake_intensity,
+        "trigger_frame": trigger_frame,
+        "trigger_seconds": args.trigger_seconds,
+        "direction": {
+            "frame": "ego_local",
+            "longitudinal_m": front_distance_m,
+            "lateral_m": front_lateral_m,
+            "heading_delta_deg": 0.0,
+        },
+        "acceptance_checks": primitive.get("acceptance_checks", ["front_vehicle_speed_drop", "front_vehicle_initially_ahead"]),
+    }
+
     return {
         "level": "FrontBrakeLab",
         "source_l3_chain_id": "front_brake_lab",
@@ -180,24 +199,13 @@ def build_config(args, l0_state, selected_actor):
         "risk_family": risk_type.get("family", "lead_vehicle_risk"),
         "risk_type_id": "lead_vehicle_hard_brake",
         "primary_action_primitive_id": "front_vehicle_brake_after_trigger",
-        "action_primitive": primitive,
+        "action_primitive": action_primitive,
         "source_l0_state_file": os.path.abspath(args.l0_json) if args.l0_json else None,
         "town": args.town,
         "map_absolute_path": scenic_map_path(args.town),
         "trigger_frame": trigger_frame,
         "trigger_seconds": args.trigger_seconds,
         "primary_actor": primary_actor,
-        "action": {
-            "mode": "front_vehicle_brake_after_trigger",
-            "action_primitive_id": "front_vehicle_brake_after_trigger",
-            "motion_frame": primitive.get("motion_frame", "lane_following"),
-            "velocity_vector": primitive.get("velocity_vector", {"speed_policy": "decelerate_to_target", "target_speed_mps": 0.0}),
-            "direction_policy": primitive.get("direction_policy", "keep_lane"),
-            "front_initial_speed_mps": front_speed_mps,
-            "target_speed_mps": 0.0,
-            "brake_intensity": args.brake_intensity,
-            "trigger_frame": trigger_frame,
-        },
         "success_criteria": {
             "front_actor_speed_drop_mps_min": args.min_speed_drop_mps,
             "front_distance_change_m_min": 0.5,
@@ -226,8 +234,19 @@ def main():
     parser.add_argument("--brake-intensity", type=float, default=1.0)
     parser.add_argument("--min-speed-drop-mps", type=float, default=1.0)
     parser.add_argument("--opencode-bin", default="opencode")
-    parser.add_argument("--opencode-model", default="deepseek-v4-flash")
+    parser.add_argument("--opencode-model", default="deepseek-v4-pro")
     parser.add_argument("--opencode-repair-attempts", type=int, default=3)
+    parser.add_argument("--spawn-check", dest="spawn_check", action="store_true", default=True)
+    parser.add_argument("--no-spawn-check", dest="spawn_check", action="store_false")
+    parser.add_argument("--spawn-semantic-check", dest="spawn_semantic_check", action="store_true", default=True)
+    parser.add_argument("--no-spawn-semantic-check", dest="spawn_semantic_check", action="store_false")
+    parser.add_argument("--spawn-check-frames", type=int, default=8)
+    parser.add_argument("--spawn-check-save-every", type=int, default=1)
+    parser.add_argument("--plan-model", default="deepseek-v4-pro")
+    parser.add_argument("--plan-url", default="https://api.deepseek.com/chat/completions")
+    parser.add_argument("--plan-timeout", type=float, default=300.0)
+    parser.add_argument("--api-key-env", default="DEEPSEEK_API_KEY")
+    parser.add_argument("--env-file", default=None)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--validate-event-trace", action="store_true")
     parser.add_argument("--carla-root", default=default_carla_root)
@@ -252,15 +271,18 @@ def main():
     primitives = build_semantic_primitives(config, l0_state)
 
     os.makedirs(args.output_dir, exist_ok=True)
-    config_path = os.path.join(args.output_dir, "scenario_config.json")
+    task_source_path = os.path.join(args.output_dir, "l4_task_source.json")
     primitives_path = os.path.join(args.output_dir, "semantic_primitives.json")
     images_dir = os.path.join(args.output_dir, "risk_images")
     write_json(os.path.join(args.output_dir, "selected_front_actor.json"), selected_actor or default_front_actor())
-    write_json(config_path, config)
+    write_json(task_source_path, config)
     write_json(primitives_path, primitives)
 
-    workspace, workspace_config, workspace_primitives, output_scenic = prepare_workspace(args, config_path, primitives_path)
-    run_opencode(args, workspace_config, workspace_primitives, output_scenic)
+    if args.execute:
+        run_spawn_check(args, config, primitives, args.output_dir)
+
+    workspace, workspace_task, workspace_primitives, output_scenic = prepare_workspace(args, task_source_path, primitives_path)
+    run_opencode(args, workspace_task, workspace_primitives, output_scenic)
 
     print(f"Selected front actor: {(selected_actor or default_front_actor()).get('type_id')}")
     print(f"OpenCode workspace: {os.path.abspath(workspace)}")
@@ -269,7 +291,7 @@ def main():
         print("OpenCode generation only. Re-run with --execute to run CARLA capture and repair loop.")
         return 0
 
-    run_scenic_validate_with_repair(args, workspace_config, workspace_primitives, output_scenic, images_dir, config, primitives)
+    run_scenic_validate_with_repair(args, workspace_task, workspace_primitives, output_scenic, images_dir, config, primitives)
     return 0
 
 

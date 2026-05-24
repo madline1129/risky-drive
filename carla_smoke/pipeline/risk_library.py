@@ -264,3 +264,14 @@ def risk_type_by_id(risk_type_id, library=None):
         if isinstance(item, dict) and item.get("id") == risk_type_id:
             return item
     return None
+
+
+def risk_types_for_family(risk_family, library=None):
+    if not risk_family:
+        return []
+    library = library or load_library()
+    return [
+        item
+        for item in library.get("risk_types", [])
+        if isinstance(item, dict) and item.get("family") == risk_family
+    ]

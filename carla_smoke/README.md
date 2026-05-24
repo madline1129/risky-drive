@@ -77,7 +77,7 @@ carla_smoke/workdir/YYYYMMDD_HHMMSS/
     chains.json
     deepseek_raw.json
   l4/
-    scenario_config.json
+    l4_task_source.json
     risk_images/
       risk_rgb_0000.png
 ```
@@ -117,7 +117,7 @@ python carla_smoke/pipeline/l2.py \
 
 `l3/chains.json` contains initial accident chains and executable `carla_plan` objects.
 
-`l4/scenario_config.json` is the code-agent output used by `scenes/risk_event_scene.py`.
+`l4/l4_task_source.json` is the L4 task emitted before OpenCode builds the executable risk scene.
 
 `l4/risk_images/` contains the rendered CARLA risk scenario frames. Use `--skip-l4` if you only want plans and do not want to run the second CARLA execution.
 
@@ -138,7 +138,7 @@ python carla_smoke/pipeline/run.py \
   --port 2000 \
   --env-file .env \
   --code-agent opencode \
-  --opencode-model deepseek-v4-flash
+  --opencode-model deepseek-v4-pro
 ```
 
 In this mode, `pipeline/l4.py` creates `opencode_workspace/`, copies reusable skills from `carla_smoke/opencode_skills/` into `.opencode/skills/`, seeds `generated_risk_scene.py`, copies L0 state when available, and calls `opencode run` to edit that script in place. The pipeline then validates the script with `py_compile` and `--help`, allows up to three opencode repair attempts for local validation or execution failures, and executes the generated script to produce `risk_images/`. By default, L4 only requires `risk_rgb_*.png` images after execution; pass `--validate-event-trace` to also check `event_trace.json` structure and numeric event semantics.
@@ -147,7 +147,7 @@ The opencode workspace contains:
 
 - `.opencode/skills/l4-carla-codegen/`
 - `AGENTS.md`
-- `scenario_config.json`
+- `l4_task.json`
 - `l0_state.json` when `--l0-json` is provided
 - `reference_executor.py`
 - `generated_risk_scene.py`

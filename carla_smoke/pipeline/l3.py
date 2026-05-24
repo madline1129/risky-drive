@@ -7,6 +7,7 @@ import os
 import sys
 
 from deepseek_client import DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DeepSeekError, chat_json, get_api_key, parse_json_response
+from risk_library import risk_type_by_id
 
 
 PROMPT_TEMPLATE = """你是自动驾驶风险推演系统中的 L3 子智能体。
@@ -15,13 +16,12 @@ PROMPT_TEMPLATE = """你是自动驾驶风险推演系统中的 L3 子智能体�
 任务：
 L3 初始事故链：
 - 对每个 L2 触发事件，构思它导致的直接物理后果。
-- L2 会携带 risk_family、risk_type_id、primary_trigger_action_id；L3 必须继承主风险类型和主触发动作。
-- L3 可以补充 participant_actions / accompanying_actions 描述其他参与者的响应或不响应，但主触发动作必须来自 L2。
+- L2 会携带 risk_family、risk_type_id；L3 必须继承它们，并根据 risk_type_id 选择主动作原语。
+- L3 可以补充 participant_actions / accompanying_actions 描述其他参与者的响应或不响应；这是第一层真正开始组织动作原语的地方。
 - L3 不是最终事故，也不是二次事故；只描述触发后第一段物理演化。
 - L3 只写自然语言事故链和涉及物体清单，不生成 CARLA/Scenic 执行计划。
-- 如果 L2/L1 已经传入 primary_perturbation_object / perturbation_target，必须继承，不要换主风险物体。
-- 如果上游对象 source="l0_actor"，必须保留 actor_id、type_id、location、rotation、relative_longitudinal_m、relative_lateral_m 等原始字段；不能改成 generated_object。
-- 对于事故链涉及多个物体的情况，用 chain_participants 列清楚：谁是主扰动物体，谁是 ego，谁只是背景/遮挡/受影响对象。
+- L3 不输出完整 actor 快照，不输出出生地点参数；只允许用 actor_ref/role 说明事故链涉及哪些角色。具体物体选择、出生地点和动作参数由 L4 PlanAgent 根据 L0+L3 完成。
+- 对于事故链涉及多个物体的情况，用 chain_participants 列清楚：谁是主扰动物体角色，谁是 ego，谁只是背景/遮挡/受影响对象。
 - 背景对象必须标注 must_not_drive_primary_event=true，避免后续 L4/code agent 把背景对象当成主风险。
 - L0 是单帧输入，不要把事故链写成已经观测到的多帧趋势；只能基于当前单帧距离、相对方位、速度、天气解释触发后的第一段物理演化。
 
@@ -43,24 +43,20 @@ L3 初始事故链：
       "parent_l2_trigger": "绳索断裂",
       "risk_family": "继承自L2",
       "risk_type_id": "继承自L2",
-      "primary_trigger_action_id": "继承自L2",
+      "primary_trigger_action_id": "由risk_type_id对应的主动作原语ID",
       "chain_description": "金属管失去约束并从货车后部向自车方向飞出",
       "direct_physical_outcome": "金属管进入自车前方车道，形成紧急避让/制动障碍",
+      "action_primitives": [
+        {"role": "primary", "action_primitive_id": "cargo_drop_or_slide_into_path", "actor_role": "payload", "description": "主扰动物体动作"},
+        {"role": "accompanying", "action_primitive_id": "ego_continue_without_braking", "actor_role": "ego", "description": "伴随触发动作"}
+      ],
       "participant_actions": [
         {"actor_role": "ego", "action_id": "ego_continue_without_braking", "description": "其他参与者动作或不动作"}
       ],
-      "primary_perturbation_object": {
-        "source": "l0_actor/generated_object/l0_ego",
-        "actor_id": 123,
-        "kind": "vehicle/pedestrian/payload/obstacle/ego",
-        "role": "front_vehicle/payload/vulnerable_actor/side_vehicle/road_obstacle/ego",
-        "must_drive_primary_event": true,
-        "selection_reason": "为什么它是主扰动物体"
-      },
       "chain_participants": [
-        {"source": "l0_ego", "actor_id": "ego", "kind": "ego", "role": "affected_actor", "must_drive_primary_event": false},
-        {"source": "l0_actor", "actor_id": 123, "kind": "vehicle", "role": "primary_actor", "must_drive_primary_event": true},
-        {"source": "l0_actor", "actor_id": 456, "kind": "pedestrian", "role": "background_or_occluder", "must_not_drive_primary_event": true}
+        {"actor_role": "ego", "role": "affected_actor", "must_drive_primary_event": false},
+        {"actor_role": "front_vehicle/payload/vulnerable_actor/side_vehicle/road_obstacle", "role": "primary_actor", "must_drive_primary_event": true},
+        {"actor_role": "background_or_occluder", "role": "background_or_occluder", "must_not_drive_primary_event": true}
       ]
     }
   ]
@@ -68,12 +64,12 @@ L3 初始事故链：
 
 硬性要求：
 - initial_accident_chains 最多 10 项，优先覆盖输入中的前 10 个 L2。
-- 每项必须包含 chain_description、direct_physical_outcome、primary_perturbation_object、chain_participants。
-- 每项必须继承 risk_family、risk_type_id、primary_trigger_action_id；participant_actions 可以跨 family 引用动作，但必须服务于主事故链。
+- 每项必须包含 chain_description、direct_physical_outcome、action_primitives、chain_participants。
+- 每项必须继承 risk_family、risk_type_id，并根据 risk_type_id 写出 primary_trigger_action_id；participant_actions 可以跨 family 引用动作，但必须服务于主事故链。
 - 不要输出执行计划字段；L4 会单独把自然语言事故链翻译成 Scenic 执行任务。
 - 不要为了“可视化明显”引入无关物体，例如非货物链条不要加入 metal_pipe。
 - chain_participants 必须区分 primary_actor 和 background/occluder/affected_actor。
-- 单帧 L0 中不存在的对象只能在上游已经明确为 generated_object/generated_actor 时出现。
+- 不要输出 primary_perturbation_object、risk_library_candidate、legacy_scenario_type 或完整 L0 actor 快照。
 """
 
 
@@ -108,67 +104,164 @@ def event_by_l2_id(events):
     return mapping
 
 
-def event_primary_object(event, scenario_type=None):
-    if not isinstance(event, dict):
-        return None
-    primary = event.get("primary_perturbation_object") or event.get("selected_actor")
-    if not isinstance(primary, dict):
-        return None
-    primary = dict(primary)
-    role_by_scenario = {
-        "front_vehicle_brake": "front_vehicle",
-        "vulnerable_actor_intrusion": "vulnerable_actor",
-        "road_obstacle_intrusion": "road_obstacle",
-        "cargo_drop": "payload",
-    }
-    primary.setdefault("role", role_by_scenario.get(scenario_type, "primary_actor"))
-    primary["must_drive_primary_event"] = True
-    return primary
-
-
-def chain_participants_from_event(event, primary):
-    participants = [
-        {"source": "l0_ego", "actor_id": "ego", "kind": "ego", "role": "affected_actor", "must_drive_primary_event": False}
-    ]
-    if isinstance(primary, dict):
-        participants.append(dict(primary))
-    for actor in event.get("actor_list", []) if isinstance(event, dict) and isinstance(event.get("actor_list"), list) else []:
-        if not isinstance(actor, dict):
-            continue
-        actor_id = actor.get("actor_id", actor.get("id"))
-        if isinstance(primary, dict) and actor_id == primary.get("actor_id", primary.get("id")):
-            continue
-        background = dict(actor)
-        background.setdefault("role", "background_or_context")
-        background["must_not_drive_primary_event"] = True
-        participants.append(background)
-    return participants
-
-
 def inherit_event_context(chain, event):
     if not isinstance(chain, dict) or not isinstance(event, dict):
         return chain
-    primary = event_primary_object(event)
-    if primary and "primary_perturbation_object" not in chain:
-        chain["primary_perturbation_object"] = primary
-    if isinstance(event.get("actor_list"), list) and "actor_list" not in chain:
-        chain["actor_list"] = event["actor_list"]
-    if primary and "chain_participants" not in chain:
-        chain["chain_participants"] = chain_participants_from_event(event, primary)
-    for key in ("risk_family", "risk_type_id", "legacy_scenario_type", "primary_trigger_action_id"):
+    for key in ("risk_family", "risk_type_id"):
         if event.get(key) is not None and key not in chain:
             chain[key] = event[key]
-    if isinstance(event.get("risk_library_candidate"), dict) and "risk_library_candidate" not in chain:
-        chain["risk_library_candidate"] = event["risk_library_candidate"]
+    if not chain.get("primary_trigger_action_id"):
+        risk_type = risk_type_by_id(chain.get("risk_type_id") or event.get("risk_type_id")) or {}
+        if risk_type.get("primary_action_primitive_id"):
+            chain["primary_trigger_action_id"] = risk_type["primary_action_primitive_id"]
+    if "action_primitives" not in chain:
+        chain["action_primitives"] = build_action_primitives(chain)
+    if "chain_participants" not in chain:
+        chain["chain_participants"] = default_chain_participants(chain)
     if "participant_actions" not in chain:
         chain["participant_actions"] = []
     return chain
 
 
 def build_prompt(l2_data, l0_data):
-    context = {"l0_state_snapshot": l0_data, "l2_trigger_event_hypotheses": l2_data}
+    context = {
+        "l0_state_snapshot": l0_data,
+        "l2_trigger_event_hypotheses": l2_data,
+        "primary_action_options_by_risk_type": primary_action_options_by_risk_type(l2_data),
+    }
     return PROMPT_TEMPLATE + "\n\n输入 JSON：\n" + json.dumps(context, ensure_ascii=False, indent=2)
 
+
+def primary_action_options_by_risk_type(l2_data):
+    options = {}
+    for event in trigger_events_from_data(l2_data):
+        if not isinstance(event, dict) or not event.get("risk_type_id"):
+            continue
+        risk_type = risk_type_by_id(event.get("risk_type_id")) or {}
+        options[event["risk_type_id"]] = {
+            "primary_action_primitive_id": risk_type.get("primary_action_primitive_id"),
+            "actor_kinds": risk_type.get("actor_kinds", []),
+            "match": risk_type.get("match", {}),
+        }
+    return options
+
+
+def actor_role_for_primary_action(action_id):
+    if not action_id:
+        return "primary_actor"
+    if action_id.startswith("front_vehicle"):
+        return "front_vehicle"
+    if action_id.startswith("vru"):
+        return "vulnerable_actor"
+    if action_id.startswith("side_vehicle"):
+        return "side_vehicle"
+    if action_id.startswith("static_obstacle"):
+        return "road_obstacle"
+    if action_id.startswith("cargo"):
+        return "payload"
+    if action_id.startswith("ego"):
+        return "ego"
+    return "primary_actor"
+
+
+def build_action_primitives(chain):
+    primary_action = chain.get("primary_trigger_action_id")
+    primitives = []
+    if primary_action:
+        primitives.append(
+            {
+                "role": "primary",
+                "action_primitive_id": primary_action,
+                "actor_role": actor_role_for_primary_action(primary_action),
+                "description": "主触发动作原语",
+            }
+        )
+    for item in chain.get("participant_actions") or []:
+        if not isinstance(item, dict):
+            continue
+        action_id = item.get("action_primitive_id") or item.get("action_id")
+        if not action_id:
+            continue
+        primitives.append(
+            {
+                "role": "accompanying",
+                "action_primitive_id": action_id,
+                "actor_role": item.get("actor_role", actor_role_for_primary_action(action_id)),
+                "description": item.get("description"),
+            }
+        )
+    return primitives
+
+
+def default_chain_participants(chain):
+    primary_role = actor_role_for_primary_action(chain.get("primary_trigger_action_id"))
+    return [
+        {"actor_role": "ego", "role": "affected_actor", "must_drive_primary_event": False},
+        {"actor_role": primary_role, "role": "primary_actor", "must_drive_primary_event": True},
+    ]
+
+
+def strip_l3_chain(chain):
+    forbidden = {
+        "primary_perturbation_object",
+        "risk_library_candidate",
+        "legacy_scenario_type",
+        "actor_list",
+        "selected_actor",
+        "matched_actor_id",
+        "matched_actor_kind",
+    }
+    for key in forbidden:
+        chain.pop(key, None)
+    if "chain_participants" in chain:
+        chain["chain_participants"] = sanitize_chain_participants(chain.get("chain_participants"))
+    if "action_primitives" in chain:
+        chain["action_primitives"] = sanitize_action_primitives(chain.get("action_primitives"))
+    allowed = {
+        "level",
+        "id",
+        "parent_l2_id",
+        "parent_l2_trigger",
+        "risk_family",
+        "risk_type_id",
+        "primary_trigger_action_id",
+        "chain_description",
+        "direct_physical_outcome",
+        "action_primitives",
+        "participant_actions",
+        "chain_participants",
+    }
+    return {key: chain.get(key) for key in allowed if chain.get(key) is not None}
+
+
+def sanitize_chain_participants(participants):
+    cleaned = []
+    for item in participants or []:
+        if not isinstance(item, dict):
+            continue
+        cleaned.append(
+            {
+                key: item.get(key)
+                for key in ("actor_role", "role", "must_drive_primary_event", "must_not_drive_primary_event")
+                if item.get(key) is not None
+            }
+        )
+    return cleaned
+
+
+def sanitize_action_primitives(primitives):
+    cleaned = []
+    for item in primitives or []:
+        if not isinstance(item, dict):
+            continue
+        cleaned.append(
+            {
+                key: item.get(key)
+                for key in ("role", "action_primitive_id", "actor_role", "description")
+                if item.get(key) is not None
+            }
+        )
+    return cleaned
 
 def normalize_output(parsed, l2_data, source_l2_file):
     chains = parsed.get("initial_accident_chains", []) if isinstance(parsed, dict) else []
@@ -183,7 +276,8 @@ def normalize_output(parsed, l2_data, source_l2_file):
             chain.setdefault("id", f"L3-{idx}")
             chain.pop("carla" + "_plan", None)
             inherit_event_context(chain, events_by_id.get(chain.get("parent_l2_id")) or events_by_id.get(idx))
-            normalized.append(chain)
+            chain["action_primitives"] = build_action_primitives(chain)
+            normalized.append(strip_l3_chain(chain))
 
     if not normalized:
         raise ValueError("L3 LLM output must contain at least one initial accident chain")
