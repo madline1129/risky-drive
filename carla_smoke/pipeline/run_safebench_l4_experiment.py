@@ -13,9 +13,9 @@ import sys
 from datetime import datetime
 
 try:
-    from deepseek_client import DEFAULT_API_KEY_ENV, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL
+    from deepseek_client import DEFAULT_API_KEY_ENV, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DeepSeekError, get_api_key
 except ImportError:
-    from .deepseek_client import DEFAULT_API_KEY_ENV, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL
+    from .deepseek_client import DEFAULT_API_KEY_ENV, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DeepSeekError, get_api_key
 
 
 METRIC_ALIASES = {
@@ -85,6 +85,20 @@ def run_command(command, continue_on_error=False):
     if completed.returncode and not continue_on_error:
         completed.check_returncode()
     return completed.returncode
+
+
+def validate_generation_api_key(args):
+    if args.skip_generation:
+        return
+    try:
+        get_api_key(args.api_key_env, args.env_file, args.api_key)
+    except DeepSeekError as exc:
+        raise SystemExit(
+            f"{exc}\n"
+            "L4 generation needs the API key and cannot produce Scenic scripts without it. "
+            "Set the key before launching, e.g. `export AIHUBMIX_API_KEY=...`, "
+            "put it in `.env`, or pass `--api-key`."
+        ) from exc
 
 
 def parse_scenario_indices(args):
@@ -469,6 +483,7 @@ def main():
 
     if not args.skip_eval and args.agent_cfg == "adv_scenic.yaml" and args.test_policy == "sac" and args.test_epoch is None:
         raise ValueError("--test-epoch is required when evaluating adv_scenic.yaml with sac.")
+    validate_generation_api_key(args)
 
     run_id = args.run_id or timestamp()
     experiment_dir = os.path.abspath(os.path.join(args.workdir_root, run_id))
