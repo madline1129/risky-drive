@@ -1,0 +1,55 @@
+{
+  "level": "RiskyWeaverActionPrimitive",
+  "scenario_type": "side_vehicle_intrusion",
+  "risk_family": "side_vehicle_risk",
+  "risk_type_id": "side_vehicle_cut_in",
+  "trigger_frame": 20,
+  "action_primitive": {
+    "id": "side_vehicle_cut_in_to_ego_lane",
+    "actor_role": "side_vehicle",
+    "motion_frame": "ego_local",
+    "direction_policy": "reduce_abs_lateral_to_ego",
+    "lateral_speed_mps": 2.0,
+    "target_relative_lateral_m": -0.5,
+    "trigger_frame": 20,
+    "aggressiveness": "high",
+    "direction": {
+      "frame": "ego_local",
+      "longitudinal_m": 8.0,
+      "lateral_m": -3.5,
+      "heading_delta_deg": 0.0
+    }
+  },
+  "ego_actor": {
+    "type_id": "vehicle.lincoln.mkz_2017",
+    "location": {
+      "x": -184.499,
+      "y": 106.23,
+      "z": 0.088
+    },
+    "rotation": {
+      "pitch": 0.102,
+      "yaw": -90.621,
+      "roll": -0.002
+    }
+  },
+  "primary_actor": {
+    "source": "generated_object",
+    "type_id": "vehicle.bh.crossbike",
+    "kind": "vehicle",
+    "role": "side_vehicle",
+    "relative_position": "front-left",
+    "relative_longitudinal_m": 8.0,
+    "relative_lateral_m": -3.5,
+    "location": {
+      "x": -188.086,
+      "y": 98.268,
+      "z": 0.088
+    },
+    "rotation": {
+      "pitch": 0.0,
+      "yaw": -90.621,
+      "roll": 0.0
+    }
+  }
+}

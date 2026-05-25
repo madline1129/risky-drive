@@ -1,0 +1,30 @@
+You are generating one Scenic scenario from one action primitive.
+
+Inputs:
+- Read task JSON: /Users/madlineceleste/Desktop/code/ChatScene-main/risky-weaver/opencode_workdir/opencode_task.json
+- Edit exactly this file in place: /Users/madlineceleste/Desktop/code/ChatScene-main/risky-weaver/opencode_workdir/generated_scene.scenic
+
+Goal:
+- Convert task.action_primitive into executable Scenic code.
+- Keep the ego and primary_actor declarations from the seed file unless the task is weather_visibility_change.
+- Add only constants/behaviors/monitors/object behavior bindings needed for the primitive.
+- Make the action dangerous/aggressive when the primitive asks for intrusion, cut-in, braking, reversing, crossing, or weather degradation.
+
+Scenic API whitelist:
+- Time is exactly simulation().currentTime. Do not use current_time, current_frame, frame_id, or time_step.
+- wait has no argument. Use wait, never wait 0.05 or wait(...).
+- Use do only for behaviors. Use take only for actions.
+- Vehicle actions: SetThrottleAction, SetBrakeAction, SetSteerAction, SetReverseAction, SetHandBrakeAction, SetAutopilotAction, SetTrafficLightAction, SetSpeedAction, SetVelocityAction, OffsetAction.
+- Walker actions: SetWalkingDirectionAction, SetWalkingSpeedAction, SetWalkAction.
+- Built-in behaviors may be used with do: FollowLaneBehavior, LaneChangeBehavior, AutopilotBehavior, WalkForwardBehavior, CrossingBehavior.
+- Bind behavior only in object declarations with with behavior BehaviorName(...).
+- Never write require actor do Behavior().
+- Constructor rule: vehicle.* -> Car, walker.* -> Pedestrian, static.prop.* -> Prop.
+- Never use Point(x, y, z), carla.Location, or carla.Transform in Scenic object declarations.
+- Weather change must use simulation().world.get_weather(), assign fields, then simulation().world.set_weather(weather).
+- Define every behavior/monitor before the first object that references it.
+
+Output contract:
+- Edit only generated_scene.scenic.
+- Do not write Markdown.
+- Do not ask questions.
