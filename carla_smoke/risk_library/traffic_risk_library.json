@@ -5,7 +5,7 @@
     {
       "id": "lead_vehicle_risk",
       "name": "Lead vehicle risk",
-      "description": "Risk primarily caused by a front vehicle braking, stopping, or moving slowly in ego's path."
+      "description": "Risk primarily caused by a front vehicle suddenly reversing, braking, stopping, or moving slowly in ego's path."
     },
     {
       "id": "vru_risk",
@@ -194,7 +194,7 @@
       "actor_kinds": ["ego"],
       "keywords": ["天气", "黑夜", "夜间", "光照", "可见度", "视距", "突然变暗"],
       "match": {},
-      "acceptance": {"sun_altitude_angle_max": -25.0, "visibility_degraded": true}
+      "acceptance": {"weather_profile_in_options": ["clear_night", "hard_rain_night", "hard_rain_sunset", "dust_storm"], "visibility_degraded": true}
     }
   ],
   "action_primitives": [
@@ -202,22 +202,25 @@
       "id": "front_vehicle_brake_after_trigger",
       "actor_role": "front_vehicle",
       "motion_frame": "lane_following",
-      "front_initial_speed_mps": 10.0,
+      "front_initial_speed_mps": 8.0,
       "target_speed_mps": 0.0,
       "brake_intensity": 1.0,
+      "front_action_variant_options": ["hard_brake", "reverse_toward_ego_if_ego_speed_low"],
       "trigger_frame": 30,
       "trigger_seconds": 1.5,
       "direction": {"frame": "ego_local", "longitudinal_m": 14.0, "lateral_m": 0.0, "heading_delta_deg": 0.0},
+      "stop_condition": "hard_stop_or_timeout",
       "acceptance_checks": ["front_vehicle_speed_drop", "front_vehicle_initially_ahead"]
     },
     {
       "id": "front_vehicle_slow_or_stop",
       "controlled_actor_role": "front_vehicle",
       "motion_frame": "lane_following",
-      "velocity_vector": {"speed_policy": "hard_stop"},
+      "velocity_vector": {"speed_policy": "hard_stop_or_reverse_if_ego_speed_low"},
       "direction_policy": "keep_lane",
       "target_speed_mps": 0.0,
       "brake_intensity": 1.0,
+      "front_action_variant_options": ["hard_brake", "reverse_toward_ego_if_ego_speed_low"],
       "stop_condition": "hard_stop_or_timeout",
       "acceptance_checks": ["front_vehicle_initially_ahead", "front_distance_change"]
     },
@@ -319,7 +322,12 @@
       "controlled_actor_role": "environment",
       "motion_frame": "world",
       "trigger_frame": 30,
-      "weather": {"sun_altitude_angle": -35.0, "cloudiness": 95.0, "fog_density": 45.0},
+      "weather_options": [
+        {"profile_id": "clear_night", "description": "晴天夜晚", "sun_altitude_angle": -35.0, "cloudiness": 5.0, "precipitation": 0.0, "precipitation_deposits": 0.0, "wetness": 0.0, "fog_density": 0.0, "wind_intensity": 10.0},
+        {"profile_id": "hard_rain_night", "description": "大雨夜晚", "sun_altitude_angle": -35.0, "cloudiness": 100.0, "precipitation": 100.0, "precipitation_deposits": 90.0, "wetness": 100.0, "fog_density": 20.0, "wind_intensity": 80.0},
+        {"profile_id": "hard_rain_sunset", "description": "大雨日落", "sun_altitude_angle": 3.0, "sun_azimuth_angle": 20.0, "cloudiness": 100.0, "precipitation": 100.0, "precipitation_deposits": 90.0, "wetness": 100.0, "fog_density": 15.0, "wind_intensity": 70.0},
+        {"profile_id": "dust_storm", "description": "沙尘暴", "sun_altitude_angle": 15.0, "cloudiness": 80.0, "precipitation": 0.0, "precipitation_deposits": 0.0, "wetness": 0.0, "fog_density": 55.0, "fog_distance": 20.0, "wind_intensity": 100.0, "dust_storm": 100.0}
+      ],
       "direction": {"frame": "world", "longitudinal_mps": 0.0, "lateral_mps": 0.0, "heading_delta_deg": 0.0},
       "stop_condition": "timeout",
       "acceptance_checks": ["weather_visibility_changed"]

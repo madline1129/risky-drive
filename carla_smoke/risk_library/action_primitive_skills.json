@@ -15,8 +15,9 @@
       "parameter_rules": [
         "direction.longitudinal_m must equal the selected/generated front vehicle relative_longitudinal_m.",
         "direction.lateral_m must equal the selected/generated front vehicle relative_lateral_m.",
-        "front_initial_speed_mps should use max(actor current speed, 10.0) if available, otherwise use 10.0.",
-        "target_speed_mps must be 0.0 for hard brake; brake_intensity must be 1.0.",
+        "Default front_action_variant is hard_brake: target_speed_mps must be 0.0 and brake_intensity must be 1.0.",
+        "Only if L0 ego.speed_mps is low enough that hard braking is not risky, set front_action_variant=reverse_toward_ego and include reverse_speed_mps at least 6.0 m/s.",
+        "Do not use reverse_toward_ego when ego is already moving fast enough for hard braking to create risk.",
         "Use the earliest valid trigger frame from the event chain so the hazard develops quickly."
       ],
       "fallback_when_no_l0_actor_matches": {
@@ -38,7 +39,8 @@
       },
       "required_action_fields": ["target_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m"],
       "parameter_rules": [
-        "Use target_speed_mps=0.0 and brake_intensity=1.0; this is an aggressive stop, not gentle slowing.",
+        "Use target_speed_mps=0.0 and brake_intensity=1.0 by default.",
+        "Only when ego.speed_mps is low, use front_action_variant=reverse_toward_ego with reverse_speed_mps >= 6.0.",
         "Keep lateral direction at 0.0 relative to the lane.",
         "Use the earliest valid trigger frame from the event chain."
       ],
@@ -232,10 +234,11 @@
       "actor_role": "environment",
       "primary_actor_kinds": ["environment"],
       "spawn_semantics": {},
-      "required_action_fields": ["trigger_frame", "weather.sun_altitude_angle"],
+      "required_action_fields": ["trigger_frame", "weather.profile_id"],
       "parameter_rules": [
         "This primitive changes environment visibility, not an actor spawn.",
-        "Use sun_altitude_angle <= -10.0 for night.",
+        "Randomly choose exactly one weather profile from: clear_night, hard_rain_night, hard_rain_sunset, dust_storm.",
+        "Use the chosen profile fields exactly in action_primitive.weather.",
         "Do not invent a physical primary actor for this primitive; primary_object may be an environment placeholder."
       ]
     },

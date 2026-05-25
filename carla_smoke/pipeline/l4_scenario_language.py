@@ -418,13 +418,16 @@ def build_semantic_primitives(config, l0_state=None):
                     actor="primary_risk_actor",
                     trigger_frame=trigger_frame,
                     front_initial_speed_mps=action.get("front_initial_speed_mps"),
-                    target_speed_mps=action.get("target_speed_mps", 0.0),
+                    target_speed_mps=action.get("target_speed_mps"),
+                    reverse_speed_mps=action.get("reverse_speed_mps"),
                     brake_intensity=action.get("brake_intensity"),
+                    stop_condition=action.get("stop_condition"),
+                    velocity_vector=action.get("velocity_vector"),
                     trigger_seconds=action.get("trigger_seconds"),
                     direction=action.get("direction"),
                     must_be_visible=True,
                 ),
-                primitive("record_expectation", expectation="front vehicle decelerates or stops while ego is still approaching"),
+                primitive("record_expectation", expectation="front vehicle performs configured hard-brake or low-speed reverse-toward-ego hazard while ego approaches"),
             ]
         )
     elif scenario_type == "vulnerable_actor_intrusion":
@@ -710,7 +713,8 @@ Requirements:
 - Preserve existing `ego = ...` and `primary_actor = ...` spawn declarations exactly. Do not replace them with `ego offset by`, `left of ego`, `right of ego`, or a newly sampled intersection/lane spawn.
 - Add or edit only behavior/timing declarations and scenario logic needed to realize the action primitive and pass validation.
 - Follow l4_task.actions.action_primitive as the hard action primitive.
-- Implement primary risk actions aggressively. Do not weaken high lateral/crossing speeds, hard braking, target-lane intrusion depth, or no-braking ego behavior into gentle lane following.
+- Implement primary risk actions aggressively. Do not weaken high lateral/crossing speeds, hard braking or conditional reverse motion, target-lane intrusion depth, or no-braking ego behavior into gentle lane following.
+- For front_vehicle_brake / front_vehicle_brake_after_trigger, default to hard braking. Only implement sudden reverse_toward_ego when action_primitive.front_action_variant == "reverse_toward_ego" or reverse_speed_mps is present.
 - Use l4_task.scene_context.map_absolute_path exactly in `param map = localPath(...)`.
 - Use the precomputed `actor.scenic_position_expression` and `actor.scenic_heading` from l4_task; never convert raw CARLA x/y/yaw yourself.
 - Never write tolerance shorthand like `12.352 +/- 1.0`; Scenic ranges must be written as `Range(11.352, 13.352)`.
@@ -720,7 +724,9 @@ Requirements:
 - Preserve l4_task.risk.scenario_type exactly.
 - Preserve primary actor kind/type, ego-relative geometry, concrete action primitive, numeric direction, speed, brake intensity, and trigger timing.
 - For weather_visibility_change, implement the environment/weather action directly; do not invent a physical primary actor.
+- For weather_visibility_change, use the selected action_primitive.weather profile exactly; it is randomly chosen upstream from clear_night, hard_rain_night, hard_rain_sunset, and dust_storm.
 - Define every `behavior`, `monitor`, helper function, and constant before the first object declaration or `with behavior ...` reference that uses it. Scenic does not allow forward references to behavior names.
+- Never write `require <object> do <Behavior>()`; Scenic `require` is only for boolean constraints. Bind actor behavior in the object declaration with `with behavior Behavior(...)`. Do not attach a custom behavior to `ego` unless the scenario type is `ego_action_risk`; the SafeBench runtime normally controls ego through CARLA Traffic Manager.
 - L0 absolute coordinates are hints; relative geometry is authoritative.
 - The generated Scenic must run through carla_smoke/scenes/safebench_scenic_scene.py.
 - Do not write Markdown. Do not ask questions. Edit only generated_risk_scene.scenic.
@@ -753,6 +759,7 @@ Repair the Scenic file in place.
 - If exact absolute placement fails or Scenic cannot sample the scene, stop hard-coding the failed absolute point. Use ego-relative placement and same-side nearby search while preserving actor type, side, and front/rear relation.
 - If this is a semantic validation failure, use the failed checks in Repair feedback as the repair target. Each failed check includes target, actual, and reason; edit the Scenic scenario so those checks pass.
 - If a behavior name is undefined, move or add the corresponding `behavior ...` definition before the object declaration that uses `with behavior ...`; do not leave forward references.
+- Never use `require <object> do <Behavior>()`; replace it with `with behavior Behavior(...)` in the relevant object declaration, or remove the ego behavior entirely when ego is Traffic-Manager controlled.
 - Do not satisfy semantic validation by changing l4_task.json, semantic_primitives.json, event_trace.json, actor type, or scenario_type. Fix only generated_risk_scene.scenic.
 - If a parameter used in range(...) can be float, cast it to int(...) or replace it with a fixed integer.
 - Do not switch to Python code.
@@ -796,6 +803,7 @@ def extract_error_line(error_output):
 
 def build_execution_repair_feedback(error_output):
     text = str(error_output or "")
+    invalid_require_behavior = re.search(r"^\s*require\s+([A-Za-z_][A-Za-z0-9_]*)\s+do\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", text, re.MULTILINE)
     feedback = {
         "kind": "execution_error",
         "issue": "Scenic/CARLA execution failed before a valid event_trace was produced.",
@@ -806,7 +814,21 @@ def build_execution_repair_feedback(error_output):
         ],
     }
     location_match = re.search(r"Object at \(([^)]+)\) does not fit in container", text)
-    if "does not fit in container" in text or location_match:
+    if invalid_require_behavior:
+        feedback.update(
+            {
+                "issue": "Generated Scenic code used invalid behavior binding syntax: `require <object> do <Behavior>()`.",
+                "invalid_actor": invalid_require_behavior.group(1),
+                "invalid_behavior": invalid_require_behavior.group(2),
+                "repair_requirements": [
+                    "Scenic `require` is only for boolean constraints; never use it to run or bind behaviors.",
+                    "Bind actor behavior in the object declaration with `with behavior Behavior(...)`.",
+                    "If the invalid actor is `ego` and scenario_type is not `ego_action_risk`, remove the custom ego behavior and let the SafeBench runtime control ego through CARLA Traffic Manager.",
+                    "Keep behavior definitions before their first `with behavior ...` use.",
+                ],
+            }
+        )
+    elif "does not fit in container" in text or location_match:
         failed_point = location_match.group(1) if location_match else "unknown"
         feedback.update(
             {
@@ -1342,6 +1364,10 @@ def validate_scenario_language_event_trace(config, primitives, trace):
 
     if frames and after and scenario_type == "front_vehicle_brake":
         primary_type = str(primary.get("type_id", ""))
+        action = config.get("action_primitive") if isinstance(config.get("action_primitive"), dict) else {}
+        reverse_speed = as_float(action.get("reverse_speed_mps"))
+        criteria = config.get("success_criteria") if isinstance(config.get("success_criteria"), dict) else {}
+        min_distance_delta = as_float(criteria.get("front_distance_change_m_min"), 1.5)
         append_check(
             checks,
             "front_brake_primary_is_vehicle",
@@ -1369,14 +1395,26 @@ def validate_scenario_language_event_trace(config, primitives, trace):
             len(speeds_after) >= 2,
             "front vehicle speed missing after trigger",
         )
-        append_check(
-            checks,
-            "front_vehicle_speed_drop",
-            {"min_speed_drop_mps": 1.0},
-            {"speed_range_mps": max(speeds_after) - min(speeds_after) if speeds_after else None},
-            bool(speeds_after and max(speeds_after) - min(speeds_after) >= 1.0),
-            "front vehicle did not show enough speed drop",
-        )
+        front_distances = numeric_values(after, "front_distance_m")
+        if reverse_speed is not None:
+            distance_delta = front_distances[0] - min(front_distances) if front_distances else None
+            append_check(
+                checks,
+                "front_vehicle_reverses_toward_ego",
+                {"min_distance_decrease_m": min_distance_delta, "reverse_speed_mps": reverse_speed},
+                {"distance_decrease_m": distance_delta, "max_speed_mps": max(speeds_after) if speeds_after else None},
+                bool(front_distances and distance_delta is not None and distance_delta >= min_distance_delta),
+                "front vehicle did not reverse toward ego enough after trigger",
+            )
+        else:
+            append_check(
+                checks,
+                "front_vehicle_speed_drop",
+                {"min_speed_drop_mps": 1.0},
+                {"speed_range_mps": max(speeds_after) - min(speeds_after) if speeds_after else None},
+                bool(speeds_after and max(speeds_after) - min(speeds_after) >= 1.0),
+                "front vehicle did not show enough speed drop",
+            )
 
     if frames and after and scenario_type == "side_vehicle_intrusion":
         laterals = numeric_values(after, "relative_lateral_m")

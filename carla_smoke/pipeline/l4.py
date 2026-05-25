@@ -3,6 +3,7 @@
 
 import json
 import os
+import random
 import shutil
 
 try:
@@ -36,12 +37,12 @@ PLAN_AGENT_PROMPT_TEMPLATE = """你是 L4 PlanAgent。
 - 如果 L3 已经给出 risk_type_id / primary_trigger_action_id / action_primitives，必须优先沿用；你的任务是把这些动作原语实例化为具体参数，不要自由发明 action.mode。
 - L3 不负责选择完整物体或出生地点；你必须根据 L0 actors、L3 chain_participants 和 action_primitives 选择 primary_object，并保留所选 L0 actor 的 actor_id、type_id、kind、location、rotation、relative_longitudinal_m、relative_lateral_m。
 - 你必须严格按 active_action_primitive_skill 填参数，尤其是 spawn_semantics、required_action_fields、parameter_rules。
-- 生成风险场景时，主风险动作必须采用激进参数：更早触发、更强制动、更快横向/纵向侵入、更深地进入 ego path；不要用慢速漂移或弱动作来表达风险。
+- 生成风险场景时，主风险动作必须采用激进参数：更早触发、更快横向/纵向侵入、更深地进入 ego path；不要用慢速漂移或弱动作来表达风险。front_vehicle_brake_after_trigger 默认是前车急刹；只有当 L0 显示 ego 速度较低、单纯急刹风险不明显时，才可选择 front_action_variant=reverse_toward_ego 并填 reverse_speed_mps。
 - 只有当 L0 actor 满足 active_action_primitive_skill.spawn_semantics 时，才能把 primary_object.source 写成 l0_actor。
 - 如果没有 L0 actor 满足出生位置语义，必须使用 primary_object.source="generated_object"，并直接给出 kind、type_id、relative_position、relative_longitudinal_m、relative_lateral_m；不要硬选一个不合语义的 L0 actor。
 - action_primitive.direction.longitudinal_m / lateral_m 必须和 primary_object 的 relative_longitudinal_m / relative_lateral_m 一致。
 - 对 vru_cross_lateral_into_path 这类“进入自车前方车道”的动作，主对象不能在自车后方；relative_longitudinal_m 必须为正且满足 skill 范围。
-- 对 weather_shift_to_night / weather_visibility_change，不要选择或生成物理 primary actor；primary_object 使用 kind="environment" 的占位对象即可。
+- 对 weather_shift_to_night / weather_visibility_change，不要选择或生成物理 primary actor；primary_object 使用 kind="environment" 的占位对象即可；天气扰动从 clear_night、hard_rain_night、hard_rain_sunset、dust_storm 中选择一个。
 - scenario_type 只能是：front_vehicle_brake, cargo_drop, vulnerable_actor_intrusion, road_obstacle_intrusion, side_vehicle_intrusion, ego_action_risk, weather_visibility_change。
 - 只输出 JSON，不要 Markdown。
 
@@ -72,6 +73,7 @@ PLAN_AGENT_PROMPT_TEMPLATE = """你是 L4 PlanAgent。
     "front_initial_speed_mps": 8.0,
     "target_speed_mps": 0.0,
     "brake_intensity": 1.0,
+    "front_action_variant": "hard_brake 或 reverse_toward_ego（仅 ego 低速时）",
     "trigger_frame": 40,
     "direction": {
       "frame": "ego_local",
@@ -240,6 +242,61 @@ def signed_intrusion_target(relative_lateral_m, target_lateral_m=None, target_ab
     return round(sign * target_abs, 3)
 
 
+WEATHER_VISIBILITY_PROFILES = [
+    {
+        "profile_id": "clear_night",
+        "description": "晴天夜晚",
+        "sun_altitude_angle": -35.0,
+        "cloudiness": 5.0,
+        "precipitation": 0.0,
+        "precipitation_deposits": 0.0,
+        "wetness": 0.0,
+        "fog_density": 0.0,
+        "wind_intensity": 10.0,
+    },
+    {
+        "profile_id": "hard_rain_night",
+        "description": "大雨夜晚",
+        "sun_altitude_angle": -35.0,
+        "cloudiness": 100.0,
+        "precipitation": 100.0,
+        "precipitation_deposits": 90.0,
+        "wetness": 100.0,
+        "fog_density": 20.0,
+        "wind_intensity": 80.0,
+    },
+    {
+        "profile_id": "hard_rain_sunset",
+        "description": "大雨日落",
+        "sun_altitude_angle": 3.0,
+        "sun_azimuth_angle": 20.0,
+        "cloudiness": 100.0,
+        "precipitation": 100.0,
+        "precipitation_deposits": 90.0,
+        "wetness": 100.0,
+        "fog_density": 15.0,
+        "wind_intensity": 70.0,
+    },
+    {
+        "profile_id": "dust_storm",
+        "description": "沙尘暴",
+        "sun_altitude_angle": 15.0,
+        "cloudiness": 80.0,
+        "precipitation": 0.0,
+        "precipitation_deposits": 0.0,
+        "wetness": 0.0,
+        "fog_density": 55.0,
+        "fog_distance": 20.0,
+        "wind_intensity": 100.0,
+        "dust_storm": 100.0,
+    },
+]
+
+
+def random_weather_visibility_profile():
+    return dict(random.choice(WEATHER_VISIBILITY_PROFILES))
+
+
 def aggressivize_action_primitive(concrete, scenario_type, primitive_id, primary_actor):
     """Raise primary risk action intensity while preserving actor geometry."""
     if not isinstance(concrete, dict):
@@ -251,10 +308,24 @@ def aggressivize_action_primitive(concrete, scenario_type, primitive_id, primary
     rel_lat = as_float(rel.get("lateral_m"), as_float(primary_actor.get("relative_lateral_m") if isinstance(primary_actor, dict) else None))
 
     if scenario_type == "front_vehicle_brake":
-        concrete["front_initial_speed_mps"] = max_float(concrete.get("front_initial_speed_mps"), 10.0)
-        concrete["target_speed_mps"] = 0.0
-        concrete["brake_intensity"] = 1.0
-        concrete["stop_condition"] = "hard_stop_or_timeout"
+        variant = concrete.get("front_action_variant")
+        if variant == "reverse_toward_ego" or concrete.get("reverse_speed_mps") is not None:
+            concrete["front_action_variant"] = "reverse_toward_ego"
+            concrete["front_initial_speed_mps"] = max_float(concrete.get("front_initial_speed_mps"), 4.0)
+            concrete["reverse_speed_mps"] = max_float(concrete.get("reverse_speed_mps"), 6.0)
+            concrete["target_speed_mps"] = None
+            concrete["brake_intensity"] = 0.0
+            concrete["stop_condition"] = "reverse_toward_ego_or_timeout"
+            velocity = concrete.get("velocity_vector") if isinstance(concrete.get("velocity_vector"), dict) else {}
+            velocity.update({"longitudinal_direction": "reverse_toward_ego", "speed_policy": "sudden_high_speed_reverse"})
+            concrete["velocity_vector"] = velocity
+        else:
+            concrete["front_action_variant"] = "hard_brake"
+            concrete["front_initial_speed_mps"] = max_float(concrete.get("front_initial_speed_mps"), 8.0)
+            concrete["target_speed_mps"] = 0.0
+            concrete["brake_intensity"] = 1.0
+            concrete["stop_condition"] = "hard_stop_or_timeout"
+        concrete["aggressiveness"] = "high"
     elif primitive_id in {"vru_cross_lateral_into_path", "vru_emerge_from_occlusion_into_path"}:
         speed_key = "crossing_speed_mps" if primitive_id == "vru_cross_lateral_into_path" else "emerge_speed_mps"
         concrete[speed_key] = max_float(concrete.get(speed_key), 2.8)
@@ -285,9 +356,8 @@ def aggressivize_action_primitive(concrete, scenario_type, primitive_id, primary
         concrete["brake_intensity_max"] = 0.0 if primitive_id == "ego_continue_without_braking" else 0.25
         concrete["aggressiveness"] = "high"
     elif primitive_id == "weather_shift_to_night":
-        weather = concrete.get("weather") if isinstance(concrete.get("weather"), dict) else {}
-        weather.update({"sun_altitude_angle": -35.0, "cloudiness": 95.0, "fog_density": 45.0})
-        concrete["weather"] = weather
+        concrete["weather_options"] = [dict(item) for item in WEATHER_VISIBILITY_PROFILES]
+        concrete["weather"] = random_weather_visibility_profile()
         concrete["aggressiveness"] = "high"
 
     return concrete
@@ -433,6 +503,10 @@ def concrete_action_primitive(
             plan_primitive.get("target_speed_mps"),
             as_float(legacy_action.get("target_speed_mps"), as_float(library_primitive.get("target_speed_mps"), 0.0)),
         )
+        reverse_speed = as_float(
+            plan_primitive.get("reverse_speed_mps"),
+            as_float(legacy_action.get("reverse_speed_mps"), as_float(library_primitive.get("reverse_speed_mps"))),
+        )
         brake_intensity = as_float(
             plan_primitive.get("brake_intensity"),
             as_float(legacy_action.get("brake_intensity"), as_float(library_primitive.get("brake_intensity"), 1.0)),
@@ -445,8 +519,12 @@ def concrete_action_primitive(
         )
         concrete = {
             **base,
+            "front_action_variant": plan_primitive.get("front_action_variant")
+            or legacy_action.get("front_action_variant")
+            or library_primitive.get("front_action_variant"),
             "front_initial_speed_mps": initial_speed,
             "target_speed_mps": target_speed,
+            "reverse_speed_mps": reverse_speed,
             "brake_intensity": brake_intensity,
             "trigger_frame": concrete_trigger_frame,
             "trigger_seconds": as_float(
@@ -505,7 +583,7 @@ def default_success_criteria(scenario_type, plan_output):
         criteria.setdefault("distance_to_hazard_decrease_min", 1.0)
         criteria.setdefault("min_distance_to_hazard_m_max", 3.0)
     elif scenario_type == "weather_visibility_change":
-        criteria.setdefault("sun_altitude_angle_max", -25.0)
+        criteria.setdefault("weather_profile_in_options", ["clear_night", "hard_rain_night", "hard_rain_sunset", "dust_storm"])
         criteria.setdefault("visibility_degraded", True)
     criteria.setdefault("must_match_scenario_type", scenario_type)
     criteria.setdefault("must_use_primary_actor_from_config", scenario_type != "weather_visibility_change")
