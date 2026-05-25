@@ -128,6 +128,47 @@ def candidate_actor_score(risk_type, actor, text=""):
     return score
 
 
+def road_context_score(l0_state, match, text=""):
+    contexts = match.get("road_context") or []
+    if not contexts:
+        return 0
+    source = (l0_state or {}).get("source") or {}
+    ego = (l0_state or {}).get("ego") or {}
+    ego_road = ego.get("road") if isinstance(ego.get("road"), dict) else {}
+    road = (l0_state or {}).get("road") or {}
+    ego_waypoint = road.get("ego_waypoint") if isinstance(road.get("ego_waypoint"), dict) else {}
+    context_text = text_blob(
+        text,
+        source.get("scenario_description"),
+        source.get("safebench_scenic_file"),
+        source.get("map"),
+        source.get("source_map"),
+        ego.get("traffic_light_state"),
+        road.get("lane_space"),
+    ).lower()
+    is_junction = bool(ego_road.get("is_junction") or ego_waypoint.get("is_junction"))
+    has_signal = bool(ego.get("traffic_light_state")) or any(
+        token in context_text
+        for token in ("traffic light", "signal", "red light", "green light", "红灯", "绿灯", "信号灯")
+    )
+    mentions_intersection = any(
+        token in context_text
+        for token in ("intersection", "junction", "crossing", "十字路口", "路口", "交叉口")
+    )
+    score = 0
+    for context in contexts:
+        context = str(context)
+        if context == "intersection" and (is_junction or mentions_intersection):
+            score += 2
+        elif context == "traffic_light_present" and has_signal:
+            score += 2
+        elif context == "signalized_intersection" and has_signal and (is_junction or mentions_intersection):
+            score += 3
+        elif context == "signalized_intersection" and has_signal:
+            score += 1
+    return score
+
+
 def best_actor_for_risk_type(risk_type, l0_state, text=""):
     actors = (l0_state or {}).get("actors") or []
     best = None
@@ -193,6 +234,7 @@ def retrieve_scene_risk_candidates(l0_state, text="", top_k=6, library=None):
             actor, score = best_actor_for_risk_type(risk_type, l0_state, text=text)
         if score <= 0:
             continue
+        score += road_context_score(l0_state, risk_type.get("match") or {}, text=text)
         action = action_by_id.get(risk_type.get("primary_action_primitive_id"))
         reason = [
             f"matched {actor_kind(actor)} actor {actor_id(actor)}" if actor else "",

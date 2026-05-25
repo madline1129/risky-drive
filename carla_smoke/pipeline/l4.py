@@ -336,8 +336,27 @@ def aggressivize_action_primitive(concrete, scenario_type, primitive_id, primary
         concrete["speed_mps"] = max_float(concrete.get("speed_mps"), 2.8)
         concrete["stop_condition"] = "min_distance_or_timeout"
         concrete["aggressiveness"] = "high"
-    elif primitive_id in {"side_vehicle_cut_in_to_ego_lane", "side_vehicle_drift_toward_ego_lane"}:
-        minimum_lateral_speed = 1.5 if primitive_id == "side_vehicle_cut_in_to_ego_lane" else 1.2
+    elif primitive_id in {
+        "side_vehicle_cut_in_to_ego_lane",
+        "side_vehicle_drift_toward_ego_lane",
+        "cross_vehicle_run_red_light_into_ego_path",
+        "cross_vehicle_fail_to_yield_into_ego_path",
+        "oncoming_vehicle_turn_across_ego_path",
+        "oncoming_vehicle_encroach_ego_lane",
+        "merge_vehicle_force_into_ego_lane",
+        "driveway_vehicle_pull_out_into_ego_path",
+        "vehicle_illegal_u_turn_into_ego_path",
+    }:
+        minimum_lateral_speed = 1.2 if primitive_id == "side_vehicle_drift_toward_ego_lane" else 1.5
+        if primitive_id in {
+            "cross_vehicle_run_red_light_into_ego_path",
+            "cross_vehicle_fail_to_yield_into_ego_path",
+            "driveway_vehicle_pull_out_into_ego_path",
+            "vehicle_illegal_u_turn_into_ego_path",
+        }:
+            minimum_lateral_speed = 2.0
+        elif primitive_id in {"oncoming_vehicle_turn_across_ego_path", "oncoming_vehicle_encroach_ego_lane", "merge_vehicle_force_into_ego_lane"}:
+            minimum_lateral_speed = 1.8
         concrete["lateral_speed_mps"] = max_float(concrete.get("lateral_speed_mps"), minimum_lateral_speed)
         concrete["target_relative_lateral_m"] = signed_intrusion_target(rel_lat, concrete.get("target_relative_lateral_m"), target_abs=0.5)
         concrete["stop_condition"] = "reached_target_lateral_or_timeout"

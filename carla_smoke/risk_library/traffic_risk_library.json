@@ -41,6 +41,26 @@
       "id": "ego_action_risk",
       "name": "Ego action risk",
       "description": "Risk primarily caused by ego continuing, reacting late, or braking insufficiently around a hazard."
+    },
+    {
+      "id": "intersection_signal_risk",
+      "name": "Intersection and signal risk",
+      "description": "Risk caused by signalized or unsignalized intersection conflicts, including red-light runners, crossing traffic, and vehicles violating right of way."
+    },
+    {
+      "id": "oncoming_vehicle_risk",
+      "name": "Oncoming vehicle risk",
+      "description": "Risk caused by opposing traffic turning across ego, drifting over the center line, or entering ego's path from the opposite direction."
+    },
+    {
+      "id": "merge_yield_risk",
+      "name": "Merge and yield risk",
+      "description": "Risk caused by vehicles entering ego's lane from ramps, side roads, driveways, parking exits, or yield-controlled approaches."
+    },
+    {
+      "id": "wrong_way_u_turn_risk",
+      "name": "Wrong-way and U-turn risk",
+      "description": "Risk caused by illegal U-turns, wrong-way entries, or abrupt turning maneuvers that place a vehicle into ego's path."
     }
   ],
   "risk_types": [
@@ -187,6 +207,76 @@
       "acceptance": {"min_obstacle_distance_to_ego_m_max": 8.0}
     },
     {
+      "id": "cross_traffic_red_light_intrusion",
+      "family": "intersection_signal_risk",
+      "legacy_scenario_type": "side_vehicle_intrusion",
+      "primary_action_primitive_id": "cross_vehicle_run_red_light_into_ego_path",
+      "actor_kinds": ["vehicle"],
+      "keywords": ["路口", "十字路口", "红灯", "绿灯", "信号灯", "闯红灯", "横向来车", "右侧来车", "左侧来车", "cross traffic", "red light"],
+      "match": {"relative_positions": ["left", "right", "front-left", "front-right"], "max_longitudinal_m": 30.0, "min_abs_lateral_m": 2.0, "max_abs_lateral_m": 18.0, "road_context": ["signalized_intersection", "traffic_light_present"]},
+      "acceptance": {"relative_lateral_delta_m_min": 2.0, "min_abs_relative_lateral_m_max": 0.8, "min_distance_to_ego_m_max": 6.0}
+    },
+    {
+      "id": "opposing_left_turn_across_path",
+      "family": "intersection_signal_risk",
+      "legacy_scenario_type": "side_vehicle_intrusion",
+      "primary_action_primitive_id": "oncoming_vehicle_turn_across_ego_path",
+      "actor_kinds": ["vehicle"],
+      "keywords": ["路口", "对向左转", "抢行", "无保护左转", "左转穿越", "对向车", "turn across path"],
+      "match": {"relative_positions": ["front", "front-left", "front-right"], "max_longitudinal_m": 35.0, "road_context": ["intersection"]},
+      "acceptance": {"relative_lateral_delta_m_min": 1.5, "min_distance_to_ego_m_max": 6.0}
+    },
+    {
+      "id": "side_road_vehicle_fails_to_yield",
+      "family": "intersection_signal_risk",
+      "legacy_scenario_type": "side_vehicle_intrusion",
+      "primary_action_primitive_id": "cross_vehicle_fail_to_yield_into_ego_path",
+      "actor_kinds": ["vehicle"],
+      "keywords": ["让行", "支路", "侧路", "路口", "未让行", "横向", "冲出", "stop sign", "yield"],
+      "match": {"relative_positions": ["left", "right", "front-left", "front-right"], "max_longitudinal_m": 30.0, "min_abs_lateral_m": 2.0, "max_abs_lateral_m": 18.0, "road_context": ["intersection"]},
+      "acceptance": {"relative_lateral_delta_m_min": 2.0, "min_abs_relative_lateral_m_max": 0.8}
+    },
+    {
+      "id": "oncoming_vehicle_encroaches_ego_lane",
+      "family": "oncoming_vehicle_risk",
+      "legacy_scenario_type": "side_vehicle_intrusion",
+      "primary_action_primitive_id": "oncoming_vehicle_encroach_ego_lane",
+      "actor_kinds": ["vehicle"],
+      "keywords": ["对向车", "逆向", "越线", "占道", "中心线", "迎面", "oncoming", "head-on"],
+      "match": {"relative_positions": ["front", "front-left", "front-right"], "max_longitudinal_m": 40.0, "max_abs_lateral_m": 6.0},
+      "acceptance": {"relative_lateral_delta_m_min": 1.5, "min_abs_relative_lateral_m_max": 0.8, "min_distance_to_ego_m_max": 8.0}
+    },
+    {
+      "id": "merge_vehicle_forced_entry",
+      "family": "merge_yield_risk",
+      "legacy_scenario_type": "side_vehicle_intrusion",
+      "primary_action_primitive_id": "merge_vehicle_force_into_ego_lane",
+      "actor_kinds": ["vehicle"],
+      "keywords": ["汇入", "并道", "匝道", "入口", "加塞", "侧方", "merge", "ramp"],
+      "match": {"relative_positions": ["left", "right", "front-left", "front-right"], "max_longitudinal_m": 30.0, "min_abs_lateral_m": 2.0, "max_abs_lateral_m": 8.0},
+      "acceptance": {"relative_lateral_delta_m_min": 1.8, "min_abs_relative_lateral_m_max": 0.8}
+    },
+    {
+      "id": "parked_or_driveway_vehicle_pulls_out",
+      "family": "merge_yield_risk",
+      "legacy_scenario_type": "side_vehicle_intrusion",
+      "primary_action_primitive_id": "driveway_vehicle_pull_out_into_ego_path",
+      "actor_kinds": ["vehicle"],
+      "keywords": ["停车位", "路边", "驶出", "车库", "小路", "driveway", "pull out", "parking"],
+      "match": {"relative_positions": ["left", "right", "front-left", "front-right"], "max_longitudinal_m": 25.0, "min_abs_lateral_m": 2.0, "max_abs_lateral_m": 10.0},
+      "acceptance": {"relative_lateral_delta_m_min": 2.0, "min_abs_relative_lateral_m_max": 0.8}
+    },
+    {
+      "id": "illegal_u_turn_into_ego_path",
+      "family": "wrong_way_u_turn_risk",
+      "legacy_scenario_type": "side_vehicle_intrusion",
+      "primary_action_primitive_id": "vehicle_illegal_u_turn_into_ego_path",
+      "actor_kinds": ["vehicle"],
+      "keywords": ["掉头", "U形", "逆行", "横摆", "突然转向", "u-turn", "wrong-way"],
+      "match": {"relative_positions": ["front", "front-left", "front-right", "left", "right"], "max_longitudinal_m": 30.0, "max_abs_lateral_m": 8.0},
+      "acceptance": {"relative_lateral_delta_m_min": 2.0, "min_distance_to_ego_m_max": 6.0}
+    },
+    {
       "id": "sudden_night_visibility_loss",
       "family": "weather_visibility_risk",
       "legacy_scenario_type": "weather_visibility_change",
@@ -277,6 +367,85 @@
       "target_relative_lateral_abs_m": 0.5,
       "stop_condition": "reached_target_lateral_or_timeout",
       "acceptance_checks": ["side_vehicle_enters_ego_lane"]
+    },
+    {
+      "id": "cross_vehicle_run_red_light_into_ego_path",
+      "controlled_actor_role": "side_vehicle",
+      "motion_frame": "ego_local",
+      "velocity_vector": {"lateral_direction": "toward_ego_lane", "longitudinal_policy": "toward_conflict_point", "speed_policy": "red_light_violation"},
+      "direction_policy": "cross_intersection_into_ego_path",
+      "lateral_speed_mps": 2.2,
+      "target_relative_lateral_abs_m": 0.3,
+      "traffic_signal_violation": "red_light_runner",
+      "stop_condition": "entered_ego_path_or_timeout",
+      "acceptance_checks": ["side_vehicle_enters_ego_lane", "min_distance_to_ego"]
+    },
+    {
+      "id": "cross_vehicle_fail_to_yield_into_ego_path",
+      "controlled_actor_role": "side_vehicle",
+      "motion_frame": "ego_local",
+      "velocity_vector": {"lateral_direction": "toward_ego_lane", "longitudinal_policy": "toward_conflict_point", "speed_policy": "fail_to_yield_intrusion"},
+      "direction_policy": "cross_intersection_into_ego_path",
+      "lateral_speed_mps": 2.0,
+      "target_relative_lateral_abs_m": 0.4,
+      "stop_condition": "entered_ego_path_or_timeout",
+      "acceptance_checks": ["side_vehicle_enters_ego_lane", "min_distance_to_ego"]
+    },
+    {
+      "id": "oncoming_vehicle_turn_across_ego_path",
+      "controlled_actor_role": "side_vehicle",
+      "motion_frame": "ego_local",
+      "velocity_vector": {"lateral_direction": "toward_ego_lane", "longitudinal_policy": "turn_across_ego_path", "speed_policy": "aggressive_turn_across"},
+      "direction_policy": "turn_across_conflict_point",
+      "lateral_speed_mps": 1.8,
+      "target_relative_lateral_abs_m": 0.4,
+      "stop_condition": "entered_ego_path_or_timeout",
+      "acceptance_checks": ["side_vehicle_enters_ego_lane", "min_distance_to_ego"]
+    },
+    {
+      "id": "oncoming_vehicle_encroach_ego_lane",
+      "controlled_actor_role": "side_vehicle",
+      "motion_frame": "ego_local",
+      "velocity_vector": {"lateral_direction": "toward_ego_lane", "longitudinal_policy": "opposing_or_closing", "speed_policy": "head_on_encroachment"},
+      "direction_policy": "reduce_abs_lateral_to_ego",
+      "lateral_speed_mps": 1.8,
+      "target_relative_lateral_abs_m": 0.3,
+      "stop_condition": "entered_ego_path_or_timeout",
+      "acceptance_checks": ["side_vehicle_enters_ego_lane", "min_distance_to_ego"]
+    },
+    {
+      "id": "merge_vehicle_force_into_ego_lane",
+      "controlled_actor_role": "side_vehicle",
+      "motion_frame": "ego_local",
+      "velocity_vector": {"lateral_direction": "toward_ego_lane", "longitudinal_policy": "parallel_or_slightly_ahead", "speed_policy": "forced_merge"},
+      "direction_policy": "reduce_abs_lateral_to_ego",
+      "lateral_speed_mps": 1.8,
+      "target_relative_lateral_abs_m": 0.4,
+      "stop_condition": "entered_ego_path_or_timeout",
+      "acceptance_checks": ["side_vehicle_enters_ego_lane"]
+    },
+    {
+      "id": "driveway_vehicle_pull_out_into_ego_path",
+      "controlled_actor_role": "side_vehicle",
+      "motion_frame": "ego_local",
+      "velocity_vector": {"lateral_direction": "toward_ego_lane", "longitudinal_policy": "from_side_road_or_parking", "speed_policy": "pull_out_aggressive"},
+      "direction_policy": "enter_ego_path_from_side",
+      "lateral_speed_mps": 2.0,
+      "target_relative_lateral_abs_m": 0.4,
+      "stop_condition": "entered_ego_path_or_timeout",
+      "acceptance_checks": ["side_vehicle_enters_ego_lane", "min_distance_to_ego"]
+    },
+    {
+      "id": "vehicle_illegal_u_turn_into_ego_path",
+      "controlled_actor_role": "side_vehicle",
+      "motion_frame": "ego_local",
+      "velocity_vector": {"lateral_direction": "toward_ego_lane", "longitudinal_policy": "turning_or_wrong_way", "speed_policy": "abrupt_u_turn"},
+      "direction_policy": "rotate_and_enter_ego_path",
+      "lateral_speed_mps": 2.0,
+      "target_relative_lateral_abs_m": 0.4,
+      "heading_delta_deg": 120.0,
+      "stop_condition": "entered_ego_path_or_timeout",
+      "acceptance_checks": ["side_vehicle_enters_ego_lane", "min_distance_to_ego"]
     },
     {
       "id": "static_obstacle_blocking_path",

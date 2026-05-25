@@ -643,6 +643,7 @@ def prepare_workspace(args, task_source_path, primitives_path, spawn_scenic_path
             "Use precomputed Scenic 2D coordinates from l4_task; never copy raw CARLA y/yaw directly.\n"
             "Never write tolerance shorthand like `12.352 +/- 1.0`; use Scenic `Range(11.352, 13.352)`.\n"
             "When absolute placement fails, preserve actor.relative_to_ego.side and use same_side_search_policy.\n"
+            "Use only the approved Scenic API surface from the l4-scenario-language-codegen skill: simulation().currentTime for time, Car for vehicle.*, Pedestrian for walker.*, Prop for static.prop.*, and supported CARLA driving/walking/weather actions.\n"
             "Write event behavior so semantic_validation in event_trace.json can pass after execution.\n"
             "The file must be executable by Scenic/CARLA.\n"
         )
@@ -754,6 +755,11 @@ Requirements:
 - Use the precomputed `actor.scenic_position_expression` and `actor.scenic_heading` from l4_task; never convert raw CARLA x/y/yaw yourself.
 - Never write tolerance shorthand like `12.352 +/- 1.0`; Scenic ranges must be written as `Range(11.352, 13.352)`.
 - In `following roadDirection from ego for ...`, use a numeric literal or `Range(lower, upper)`, never `a +/- b`.
+- Scenic API whitelist:
+  - Time: use only `simulation().currentTime`; never `simulation().current_time`, `current_frame`, or guessed frame fields.
+  - Actor constructors: `Car` only for `vehicle.*`, `Pedestrian` only for `walker.*`, `Prop` for `static.prop.*`; never write `Car` with a `static.prop.*` blueprint.
+  - Allowed actions/behaviors: `FollowLaneBehavior`, `LaneChangeBehavior`, `SetThrottleAction`, `SetBrakeAction`, `SetSteerAction`, `SetReverseAction`, `SetHandBrakeAction`, `SetWalkingDirectionAction`, `SetWalkingSpeedAction`.
+  - Weather changes may use `simulation().world.get_weather()` and `simulation().world.set_weather(weather)`.
 - Prefer `actor.relative_to_ego` for L0 actors. If exact placement fails, use `same_side_search_policy` and keep the original left/right side.
 - Do not over-constrain Scenic placement around one absolute point. Absolute L0 poses are hints; ego-relative same-side geometry is the acceptance target.
 - Preserve l4_task.risk.scenario_type exactly.
@@ -761,6 +767,7 @@ Requirements:
 - For weather_visibility_change, implement the environment/weather action directly; do not invent a physical primary actor.
 - For weather_visibility_change, use the selected action_primitive.weather profile exactly; it is randomly chosen upstream from clear_night, hard_rain_night, hard_rain_sunset, and dust_storm.
 - Define every `behavior`, `monitor`, helper function, and constant before the first object declaration or `with behavior ...` reference that uses it. Scenic does not allow forward references to behavior names.
+- Use Scenic's simulation clock exactly as `simulation().currentTime`; never use `simulation().current_time` or other snake_case variants.
 - Never write `require <object> do <Behavior>()`; Scenic `require` is only for boolean constraints. Bind actor behavior in the object declaration with `with behavior Behavior(...)`. Do not attach a custom behavior to `ego` unless the scenario type is `ego_action_risk`; the SafeBench runtime normally controls ego through CARLA Traffic Manager.
 - L0 absolute coordinates are hints; relative geometry is authoritative.
 - The generated Scenic must run through carla_smoke/scenes/safebench_scenic_scene.py.
@@ -794,6 +801,8 @@ Repair the Scenic file in place.
 - If exact absolute placement fails or Scenic cannot sample the scene, stop hard-coding the failed absolute point. Use ego-relative placement and same-side nearby search while preserving actor type, side, and front/rear relation.
 - If this is a semantic validation failure, use the failed checks in Repair feedback as the repair target. Each failed check includes target, actual, and reason; edit the Scenic scenario so those checks pass.
 - If a behavior name is undefined, move or add the corresponding `behavior ...` definition before the object declaration that uses `with behavior ...`; do not leave forward references.
+- If timing logic uses `simulation().current_time`, replace it with Scenic's supported `simulation().currentTime`.
+- If a static blueprint such as `static.prop.*` is declared as `Car`, replace it with `Prop`; keep `Car` for `vehicle.*` and `Pedestrian` for `walker.*`.
 - Never use `require <object> do <Behavior>()`; replace it with `with behavior Behavior(...)` in the relevant object declaration, or remove the ego behavior entirely when ego is Traffic-Manager controlled.
 - Do not satisfy semantic validation by changing l4_task.json, semantic_primitives.json, event_trace.json, actor type, or scenario_type. Fix only generated_risk_scene.scenic.
 - If a parameter used in range(...) can be float, cast it to int(...) or replace it with a fixed integer.
@@ -1566,6 +1575,8 @@ def scenic_actor_class(actor):
     type_id = str((actor or {}).get("type_id") or "").lower()
     if kind in {"pedestrian", "walker", "cyclist"} or type_id.startswith("walker."):
         return "Pedestrian"
+    if kind in {"obstacle", "static", "payload", "cargo", "object"} or type_id.startswith("static.prop."):
+        return "Prop"
     return "Car"
 
 

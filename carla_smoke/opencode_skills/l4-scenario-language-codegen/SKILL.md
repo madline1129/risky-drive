@@ -21,9 +21,31 @@ Generate `generated_risk_scene.scenic` for the ChatScene L4 backend.
 - Implement primary risk actions aggressively. Do not weaken high lateral/crossing speeds, hard braking or conditional reverse motion, target-lane intrusion depth, or no-braking ego behavior into gentle lane following.
 - Define every `behavior`, `monitor`, helper function, and constant before the first object declaration or `with behavior ...` reference that uses it. Scenic does not allow forward references to behavior names.
 - Never write `require <object> do <Behavior>()`; Scenic `require` is only for boolean constraints. Bind actor behavior in the object declaration with `with behavior Behavior(...)`. Do not attach a custom behavior to `ego` unless the scenario type is `ego_action_risk`; the SafeBench runtime normally controls ego through CARLA Traffic Manager.
+- Use Scenic's simulation clock exactly as `simulation().currentTime`. Never use `simulation().current_time`, `current_time`, or Python-style snake_case simulation attributes.
 - If exact absolute placement fails, adjust only within `actor.relative_to_ego.same_side_search_policy`; never flip left/right.
 - L0 absolute pose is a hint. Ego-relative geometry and the requested risk action are authoritative.
 - The scene must be executable by `carla_smoke/scenes/safebench_scenic_scene.py`.
+
+## Scenic API Whitelist
+
+Use only these Scenic/CARLA API forms unless the input file already contains a proven equivalent:
+
+- Header/model: `Town = "Town05"`, `param map = localPath("...")`, `param carla_map = Town`, `model scenic.simulators.carla.model`.
+- Actor constructors: `Car` for `vehicle.*`, `Pedestrian` for `walker.*`, `Prop` for `static.prop.*`; never use `Car` with a `static.prop.*` blueprint.
+- Actor specifiers: `at (x @ y)`, `with heading ... deg`, `with regionContainedIn None`, `with blueprint "..."`, `with behavior BehaviorName(...)`.
+- Timing: `simulation().currentTime` only. One Scenic time step is one frame in this executor.
+- Built-in driving behaviors/actions: `FollowLaneBehavior(target_speed=...)`, `LaneChangeBehavior(laneSectionToSwitch=..., target_speed=...)`, `SetThrottleAction(...)`, `SetBrakeAction(...)`, `SetSteerAction(...)`, `SetReverseAction(...)`, `SetHandBrakeAction(...)`.
+- Walker actions: `SetWalkingDirectionAction(...)`, `SetWalkingSpeedAction(...)`.
+- Weather: `simulation().world.get_weather()`, mutate `carla.WeatherParameters` fields from `action_primitive.weather`, then call `simulation().world.set_weather(weather)`.
+- Geometry helpers: `network.laneSectionAt(actor)`, `OrientedPoint following roadDirection from ego for <number or Range(...)>`, `left of ... by ...`, `right of ... by ...`.
+
+Forbidden forms:
+
+- `simulation().current_time`, `current_frame`, `time_step`, or other guessed time fields.
+- `require <object> do <Behavior>()`.
+- `Point(x, y, z)`, `carla.Location(...)`, `carla.Transform(...)`.
+- `Car` with a `static.prop.*` blueprint.
+- Undefined behavior/action names or behavior definitions after the first object which uses them.
 
 ## Primitive Mapping
 

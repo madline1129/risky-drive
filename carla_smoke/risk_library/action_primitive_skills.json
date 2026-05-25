@@ -169,6 +169,169 @@
       }
     },
     {
+      "id": "cross_vehicle_run_red_light_into_ego_path",
+      "actor_role": "side_vehicle",
+      "primary_actor_kinds": ["vehicle"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": -8.0, "max": 25.0, "meaning": "cross traffic near the conflict point"},
+        "abs_relative_lateral_m": {"min": 2.0, "max": 18.0, "meaning": "left/right cross-traffic approach"},
+        "must_be_side_actor": true
+      },
+      "required_action_fields": ["lateral_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m", "target_relative_lateral_m"],
+      "parameter_rules": [
+        "Use this for signalized intersections when a side vehicle violates red light or enters during ego green/start.",
+        "Preserve the side from relative_lateral_m; do not flip left/right.",
+        "lateral_speed_mps should be aggressive, at least 2.0 m/s.",
+        "target_relative_lateral_m should move deep into ego path, around signed 0.3-0.5 m from ego centerline."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 8.0,
+        "relative_lateral_m": 8.0,
+        "kind": "vehicle",
+        "type_id": "vehicle.tesla.model3"
+      }
+    },
+    {
+      "id": "cross_vehicle_fail_to_yield_into_ego_path",
+      "actor_role": "side_vehicle",
+      "primary_actor_kinds": ["vehicle"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": -8.0, "max": 25.0, "meaning": "side-road vehicle near conflict point"},
+        "abs_relative_lateral_m": {"min": 2.0, "max": 18.0, "meaning": "left/right side road approach"},
+        "must_be_side_actor": true
+      },
+      "required_action_fields": ["lateral_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m", "target_relative_lateral_m"],
+      "parameter_rules": [
+        "Use this for stop/yield/side-road vehicles entering ego path.",
+        "Preserve the side from relative_lateral_m; do not flip left/right.",
+        "lateral_speed_mps should be at least 1.8 m/s.",
+        "target_relative_lateral_m should enter ego lane around signed 0.4 m."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 8.0,
+        "relative_lateral_m": -7.0,
+        "kind": "vehicle",
+        "type_id": "vehicle.nissan.micra"
+      }
+    },
+    {
+      "id": "oncoming_vehicle_turn_across_ego_path",
+      "actor_role": "side_vehicle",
+      "primary_actor_kinds": ["vehicle"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": 4.0, "max": 35.0, "meaning": "opposing/front vehicle near intersection"},
+        "abs_relative_lateral_m": {"min": 0.0, "max": 6.0, "meaning": "front or adjacent opposing approach"},
+        "must_not_be_behind_ego": true
+      },
+      "required_action_fields": ["lateral_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m", "target_relative_lateral_m"],
+      "parameter_rules": [
+        "Use this for opposing vehicles turning across ego path at intersections.",
+        "Do not place the vehicle behind ego.",
+        "lateral_speed_mps should be at least 1.6 m/s and the target lateral should enter ego path."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 14.0,
+        "relative_lateral_m": 3.5,
+        "kind": "vehicle",
+        "type_id": "vehicle.audi.tt"
+      }
+    },
+    {
+      "id": "oncoming_vehicle_encroach_ego_lane",
+      "actor_role": "side_vehicle",
+      "primary_actor_kinds": ["vehicle"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": 6.0, "max": 40.0, "meaning": "oncoming/front vehicle"},
+        "abs_relative_lateral_m": {"min": 1.5, "max": 6.0, "meaning": "opposing or adjacent lane"},
+        "must_not_be_behind_ego": true
+      },
+      "required_action_fields": ["lateral_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m", "target_relative_lateral_m"],
+      "parameter_rules": [
+        "Use this for oncoming or wrong-direction vehicles drifting into ego lane.",
+        "lateral_speed_mps should be at least 1.6 m/s.",
+        "target_relative_lateral_m should enter ego path around signed 0.3-0.5 m."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 18.0,
+        "relative_lateral_m": -3.5,
+        "kind": "vehicle",
+        "type_id": "vehicle.dodge.charger_2020"
+      }
+    },
+    {
+      "id": "merge_vehicle_force_into_ego_lane",
+      "actor_role": "side_vehicle",
+      "primary_actor_kinds": ["vehicle"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": -5.0, "max": 25.0, "meaning": "parallel or slightly ahead merging vehicle"},
+        "abs_relative_lateral_m": {"min": 2.0, "max": 8.0, "meaning": "neighboring merge lane"},
+        "must_be_side_actor": true
+      },
+      "required_action_fields": ["lateral_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m", "target_relative_lateral_m"],
+      "parameter_rules": [
+        "Use this for ramp, lane-drop, or forced merge into ego lane.",
+        "Preserve the side from relative_lateral_m.",
+        "lateral_speed_mps should be at least 1.6 m/s."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 6.0,
+        "relative_lateral_m": 3.5,
+        "kind": "vehicle",
+        "type_id": "vehicle.tesla.model3"
+      }
+    },
+    {
+      "id": "driveway_vehicle_pull_out_into_ego_path",
+      "actor_role": "side_vehicle",
+      "primary_actor_kinds": ["vehicle"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": 0.0, "max": 25.0, "meaning": "side vehicle near front conflict point"},
+        "abs_relative_lateral_m": {"min": 2.0, "max": 10.0, "meaning": "driveway/parking/side-road offset"},
+        "must_be_side_actor": true
+      },
+      "required_action_fields": ["lateral_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m", "target_relative_lateral_m"],
+      "parameter_rules": [
+        "Use this for vehicles pulling out from parking, driveway, or side road.",
+        "Preserve the side from relative_lateral_m.",
+        "lateral_speed_mps should be at least 1.8 m/s."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 8.0,
+        "relative_lateral_m": -5.0,
+        "kind": "vehicle",
+        "type_id": "vehicle.nissan.micra"
+      }
+    },
+    {
+      "id": "vehicle_illegal_u_turn_into_ego_path",
+      "actor_role": "side_vehicle",
+      "primary_actor_kinds": ["vehicle"],
+      "spawn_semantics": {
+        "relative_longitudinal_m": {"min": 0.0, "max": 30.0, "meaning": "front or side-front turning vehicle"},
+        "abs_relative_lateral_m": {"min": 0.0, "max": 8.0, "meaning": "near ego path or neighboring lane"},
+        "must_not_be_behind_ego": true
+      },
+      "required_action_fields": ["lateral_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m", "target_relative_lateral_m"],
+      "parameter_rules": [
+        "Use this for abrupt illegal U-turn or wrong-way entry into ego path.",
+        "heading_delta_deg may be large, but do not flip the configured relative side.",
+        "lateral_speed_mps should be at least 1.8 m/s."
+      ],
+      "fallback_when_no_l0_actor_matches": {
+        "source": "generated_object",
+        "relative_longitudinal_m": 10.0,
+        "relative_lateral_m": 3.5,
+        "kind": "vehicle",
+        "type_id": "vehicle.audi.tt"
+      }
+    },
+    {
       "id": "static_obstacle_blocking_path",
       "actor_role": "road_obstacle",
       "primary_actor_kinds": ["obstacle", "static", "vehicle"],

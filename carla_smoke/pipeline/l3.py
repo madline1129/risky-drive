@@ -29,6 +29,8 @@ L3 初始事故链：
 - 如果 L0 actors 中还有可见前车、侧车、行人、障碍物等对象，即使它不是主触发对象，也必须作为 background/occluder/affected_actor 写入 chain_participants，并在 action_primitives 中说明它的动作。
 - 背景对象必须标注 must_not_drive_primary_event=true，避免后续 L4/code agent 把背景对象当成主风险。
 - 背景车辆默认动作原语是 vehicle_maintain_current_speed；静止/遮挡行人默认动作原语是 vru_remain_stationary；静态遮挡物/障碍物默认动作原语是 actor_remain_stationary；ego 默认动作原语是 ego_continue_without_braking。
+- 对 intersection_signal_risk，事故链必须保留“路口/信号灯/让行冲突”语义：横向来车闯红灯、对向左转抢行、支路车辆未让行等，主触发角色通常是 side_vehicle/cross_vehicle/oncoming_vehicle，不要退化成普通相邻车道变道。
+- 对 oncoming_vehicle_risk、merge_yield_risk、wrong_way_u_turn_risk，主动作仍按 risk_type 的 primary_action_primitive_id 组织，但 chain_description 必须明确对向/汇入/掉头/逆行的来源语义。
 - L0 是单帧输入，不要把事故链写成已经观测到的多帧趋势；只能基于当前单帧距离、相对方位、速度、天气解释触发后的第一段物理演化。
 
 例子：
@@ -164,6 +166,16 @@ def actor_role_for_primary_action(action_id):
     if action_id.startswith("vru"):
         return "vulnerable_actor"
     if action_id.startswith("side_vehicle"):
+        return "side_vehicle"
+    if action_id.startswith("cross_vehicle"):
+        return "side_vehicle"
+    if action_id.startswith("oncoming_vehicle"):
+        return "side_vehicle"
+    if action_id.startswith("merge_vehicle"):
+        return "side_vehicle"
+    if action_id.startswith("driveway_vehicle"):
+        return "side_vehicle"
+    if action_id.startswith("vehicle_illegal_u_turn"):
         return "side_vehicle"
     if action_id.startswith("static_obstacle"):
         return "road_obstacle"

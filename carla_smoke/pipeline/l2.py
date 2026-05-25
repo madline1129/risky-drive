@@ -64,6 +64,10 @@ L2 触发事件假设：
 - 每个 L1 风险只生成 1 个 L2 触发事件，id 形如 L2-1a、L2-2a、L2-3a、L2-4a。
 - 对 risk_family=rare_composite_risk，必须根据 L1 的 name/evidence/weakness_reason 继续细化一个不常见但可实现的触发事件；“前车突然左转后暴露行人”只是例子，不要固定复用。
 - 对 risk_family=weather_visibility_risk，触发事件应围绕“环境突然变成黑夜或可见度显著下降”。
+- 对 risk_family=intersection_signal_risk，必须优先考虑路口冲突：横向来车闯红灯、支路/让行车辆冲出、对向左转抢行；如果 L0 显示 ego traffic_light_state 为 Red/Green/Yellow 或 source 提到 intersection/junction/路口/信号灯，不要退化成普通侧车变道。
+- 对 risk_family=oncoming_vehicle_risk，触发事件应围绕对向车越线、对向左转穿越自车路径、逆向占用车道。
+- 对 risk_family=merge_yield_risk，触发事件应围绕匝道/支路/停车位车辆未让行并强行汇入自车路径。
+- 对 risk_family=wrong_way_u_turn_risk，触发事件应围绕非法掉头、逆行进入、突然横摆进入自车路径。
 - 不要重新识别图像；只能基于输入 JSON 做推演。
 - 必须继承 L1 的 risk_family，并且 risk_type_id 只能来自输入的 risk_type_options_by_family[risk_family]。
 - 不要输出 primary_trigger_action_id、primary_action_primitive_id、action_primitive、risk_library_candidate、legacy_scenario_type、actor_list、selected_actor、primary_perturbation_object、matched_actor_id。
@@ -140,6 +144,14 @@ def fallback_events_for_risk(risk, rank):
             pairs = [("遮挡关系突变后暴露近距离风险对象", "原本不显著的风险对象突然进入自车可冲突区域")]
     elif family == "weather_visibility_risk":
         pairs = [("环境光照突然降低至黑夜", "自车可见距离和目标识别余量显著下降")]
+    elif family == "intersection_signal_risk":
+        pairs = [("横向来车闯红灯进入自车路径", "路口冲突点被横向车辆快速占据")]
+    elif family == "oncoming_vehicle_risk":
+        pairs = [("对向车辆越线侵入自车车道", "自车前方可用车道空间被对向车占用")]
+    elif family == "merge_yield_risk":
+        pairs = [("侧方车辆未让行强行汇入", "侧方车辆进入自车行驶路径")]
+    elif family == "wrong_way_u_turn_risk":
+        pairs = [("前方车辆突然非法掉头", "车辆横摆并侵入自车路径")]
     elif "货物" in name or "固定" in name:
         pairs = [("绳索断裂", "货物约束突然失效")]
     elif "刹车灯" in name:
