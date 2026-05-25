@@ -36,6 +36,7 @@ PLAN_AGENT_PROMPT_TEMPLATE = """你是 L4 PlanAgent。
 - 如果 L3 已经给出 risk_type_id / primary_trigger_action_id / action_primitives，必须优先沿用；你的任务是把这些动作原语实例化为具体参数，不要自由发明 action.mode。
 - L3 不负责选择完整物体或出生地点；你必须根据 L0 actors、L3 chain_participants 和 action_primitives 选择 primary_object，并保留所选 L0 actor 的 actor_id、type_id、kind、location、rotation、relative_longitudinal_m、relative_lateral_m。
 - 你必须严格按 active_action_primitive_skill 填参数，尤其是 spawn_semantics、required_action_fields、parameter_rules。
+- 生成风险场景时，主风险动作必须采用激进参数：更早触发、更强制动、更快横向/纵向侵入、更深地进入 ego path；不要用慢速漂移或弱动作来表达风险。
 - 只有当 L0 actor 满足 active_action_primitive_skill.spawn_semantics 时，才能把 primary_object.source 写成 l0_actor。
 - 如果没有 L0 actor 满足出生位置语义，必须使用 primary_object.source="generated_object"，并直接给出 kind、type_id、relative_position、relative_longitudinal_m、relative_lateral_m；不要硬选一个不合语义的 L0 actor。
 - action_primitive.direction.longitudinal_m / lateral_m 必须和 primary_object 的 relative_longitudinal_m / relative_lateral_m 一致。
@@ -219,6 +220,79 @@ def as_float(value, default=None):
         return default
 
 
+def max_float(value, minimum):
+    numeric = as_float(value)
+    if numeric is None:
+        return minimum
+    return max(numeric, minimum)
+
+
+def signed_intrusion_target(relative_lateral_m, target_lateral_m=None, target_abs=0.5):
+    rel = as_float(relative_lateral_m)
+    target = as_float(target_lateral_m)
+    if rel is None:
+        return target if target is not None else 0.0
+    if abs(rel) <= 0.05:
+        return 0.0
+    sign = -1.0 if rel < 0 else 1.0
+    if target is not None and target * sign >= 0 and abs(target) <= target_abs:
+        return target
+    return round(sign * target_abs, 3)
+
+
+def aggressivize_action_primitive(concrete, scenario_type, primitive_id, primary_actor):
+    """Raise primary risk action intensity while preserving actor geometry."""
+    if not isinstance(concrete, dict):
+        return concrete
+    primitive_id = primitive_id or concrete.get("id")
+    rel = primary_actor.get("relative_to_ego") if isinstance(primary_actor, dict) else {}
+    if not isinstance(rel, dict):
+        rel = {}
+    rel_lat = as_float(rel.get("lateral_m"), as_float(primary_actor.get("relative_lateral_m") if isinstance(primary_actor, dict) else None))
+
+    if scenario_type == "front_vehicle_brake":
+        concrete["front_initial_speed_mps"] = max_float(concrete.get("front_initial_speed_mps"), 10.0)
+        concrete["target_speed_mps"] = 0.0
+        concrete["brake_intensity"] = 1.0
+        concrete["stop_condition"] = "hard_stop_or_timeout"
+    elif primitive_id in {"vru_cross_lateral_into_path", "vru_emerge_from_occlusion_into_path"}:
+        speed_key = "crossing_speed_mps" if primitive_id == "vru_cross_lateral_into_path" else "emerge_speed_mps"
+        concrete[speed_key] = max_float(concrete.get(speed_key), 2.8)
+        concrete["target_relative_lateral_m"] = 0.0
+        concrete["stop_condition"] = "reached_ego_lane_or_timeout"
+        concrete["aggressiveness"] = "high"
+    elif primitive_id == "vru_move_longitudinal_in_path":
+        concrete["speed_mps"] = max_float(concrete.get("speed_mps"), 2.8)
+        concrete["stop_condition"] = "min_distance_or_timeout"
+        concrete["aggressiveness"] = "high"
+    elif primitive_id in {"side_vehicle_cut_in_to_ego_lane", "side_vehicle_drift_toward_ego_lane"}:
+        minimum_lateral_speed = 1.5 if primitive_id == "side_vehicle_cut_in_to_ego_lane" else 1.2
+        concrete["lateral_speed_mps"] = max_float(concrete.get("lateral_speed_mps"), minimum_lateral_speed)
+        concrete["target_relative_lateral_m"] = signed_intrusion_target(rel_lat, concrete.get("target_relative_lateral_m"), target_abs=0.5)
+        concrete["stop_condition"] = "reached_target_lateral_or_timeout"
+        concrete["aggressiveness"] = "high"
+        velocity = concrete.get("velocity_vector") if isinstance(concrete.get("velocity_vector"), dict) else {}
+        velocity.update({"lateral_direction": "toward_ego_lane", "lateral_speed_policy": "aggressive_intrusion"})
+        concrete["velocity_vector"] = velocity
+    elif primitive_id == "cargo_drop_or_slide_into_path":
+        concrete["speed_mps"] = max_float(concrete.get("speed_mps"), 3.0)
+        concrete["stop_condition"] = "path_blocked_or_timeout"
+        concrete["aggressiveness"] = "high"
+    elif primitive_id in {"ego_continue_without_braking", "ego_late_or_insufficient_braking"}:
+        velocity = concrete.get("velocity_vector") if isinstance(concrete.get("velocity_vector"), dict) else {}
+        velocity.update({"speed_policy": "maintain_or_accelerate_toward_hazard", "longitudinal_direction": "forward"})
+        concrete["velocity_vector"] = velocity
+        concrete["brake_intensity_max"] = 0.0 if primitive_id == "ego_continue_without_braking" else 0.25
+        concrete["aggressiveness"] = "high"
+    elif primitive_id == "weather_shift_to_night":
+        weather = concrete.get("weather") if isinstance(concrete.get("weather"), dict) else {}
+        weather.update({"sun_altitude_angle": -35.0, "cloudiness": 95.0, "fog_density": 45.0})
+        concrete["weather"] = weather
+        concrete["aggressiveness"] = "high"
+
+    return concrete
+
+
 def actor_by_id(l0_state, wanted_id):
     wanted = actor_id(wanted_id)
     for actor in l0_state.get("actors", []) if isinstance(l0_state, dict) else []:
@@ -393,6 +467,7 @@ def concrete_action_primitive(
                 "front_vehicle_initially_ahead",
             ],
         }
+        concrete = aggressivize_action_primitive(concrete, scenario_type, primitive_id, primary_actor)
         return {key: value for key, value in concrete.items() if value is not None}
 
     concrete = dict(library_primitive)
@@ -401,35 +476,36 @@ def concrete_action_primitive(
     if primitive_id:
         concrete["id"] = primitive_id
     concrete.setdefault("trigger_frame", int(trigger_frame))
+    concrete = aggressivize_action_primitive(concrete, scenario_type, primitive_id, primary_actor)
     return concrete
 
 
 def default_success_criteria(scenario_type, plan_output):
     criteria = dict(plan_output.get("success_criteria") or {})
     if scenario_type == "front_vehicle_brake":
-        criteria.setdefault("front_actor_speed_drop_mps_min", 1.0)
-        criteria.setdefault("front_distance_change_m_min", 1.0)
+        criteria.setdefault("front_actor_speed_drop_mps_min", 2.0)
+        criteria.setdefault("front_distance_change_m_min", 1.5)
     elif scenario_type == "vulnerable_actor_intrusion":
-        criteria.setdefault("actor_motion_m_min", 1.0)
-        criteria.setdefault("min_distance_to_ego_m_max", 8.0)
-        criteria.setdefault("min_abs_relative_lateral_m_max", 2.2)
+        criteria.setdefault("actor_motion_m_min", 2.0)
+        criteria.setdefault("min_distance_to_ego_m_max", 6.0)
+        criteria.setdefault("min_abs_relative_lateral_m_max", 0.8)
         criteria.setdefault("relative_lateral_crosses_zero", True)
     elif scenario_type == "side_vehicle_intrusion":
-        criteria.setdefault("relative_lateral_delta_m_min", 1.2)
-        criteria.setdefault("min_abs_relative_lateral_m_max", 2.2)
-        criteria.setdefault("min_distance_to_ego_m_max", 8.0)
+        criteria.setdefault("relative_lateral_delta_m_min", 1.5)
+        criteria.setdefault("min_abs_relative_lateral_m_max", 0.8)
+        criteria.setdefault("min_distance_to_ego_m_max", 6.0)
     elif scenario_type == "cargo_drop":
         criteria.setdefault("payload_count_min", 1)
-        criteria.setdefault("payload_motion_m_min", 0.5)
+        criteria.setdefault("payload_motion_m_min", 1.5)
     elif scenario_type == "road_obstacle_intrusion":
         criteria.setdefault("obstacle_count_min", 1)
-        criteria.setdefault("min_obstacle_distance_to_ego_m_max", 12.0)
+        criteria.setdefault("min_obstacle_distance_to_ego_m_max", 8.0)
     elif scenario_type == "ego_action_risk":
-        criteria.setdefault("ego_speed_near_trigger_min", 1.0)
-        criteria.setdefault("distance_to_hazard_decrease_min", 0.5)
-        criteria.setdefault("min_distance_to_hazard_m_max", 4.0)
+        criteria.setdefault("ego_speed_near_trigger_min", 2.0)
+        criteria.setdefault("distance_to_hazard_decrease_min", 1.0)
+        criteria.setdefault("min_distance_to_hazard_m_max", 3.0)
     elif scenario_type == "weather_visibility_change":
-        criteria.setdefault("sun_altitude_angle_max", -10.0)
+        criteria.setdefault("sun_altitude_angle_max", -25.0)
         criteria.setdefault("visibility_degraded", True)
     criteria.setdefault("must_match_scenario_type", scenario_type)
     criteria.setdefault("must_use_primary_actor_from_config", scenario_type != "weather_visibility_change")

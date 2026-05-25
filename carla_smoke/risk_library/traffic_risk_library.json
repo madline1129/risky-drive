@@ -52,7 +52,7 @@
       "actor_kinds": ["vehicle"],
       "keywords": ["前车", "急刹", "刹车", "制动", "减速", "追尾", "跟车"],
       "match": {"relative_positions": ["front"], "max_longitudinal_m": 30.0},
-      "acceptance": {"front_actor_speed_drop_mps_min": 1.0, "front_distance_change_m_min": 1.0}
+      "acceptance": {"front_actor_speed_drop_mps_min": 2.0, "front_distance_change_m_min": 1.5}
     },
     {
       "id": "lead_vehicle_slow_or_stop",
@@ -62,7 +62,7 @@
       "actor_kinds": ["vehicle"],
       "keywords": ["前车", "低速", "停滞", "停车", "静止", "跟车"],
       "match": {"relative_positions": ["front"], "max_longitudinal_m": 30.0},
-      "acceptance": {"front_actor_speed_drop_mps_min": 0.5, "front_distance_change_m_min": 0.5}
+      "acceptance": {"front_actor_speed_drop_mps_min": 2.0, "front_distance_change_m_min": 1.5}
     },
     {
       "id": "vru_lateral_crossing",
@@ -72,7 +72,7 @@
       "actor_kinds": ["pedestrian", "walker", "cyclist"],
       "keywords": ["行人", "骑行", "自行车", "横穿", "横向", "穿越", "进入车道", "侵入", "A柱", "盲区"],
       "match": {"relative_positions": ["front-left", "front-right", "left", "right"], "max_longitudinal_m": 20.0, "min_abs_lateral_m": 0.8, "max_abs_lateral_m": 6.0},
-      "acceptance": {"actor_motion_m_min": 1.0, "min_abs_relative_lateral_m_max": 2.2, "distance_to_ego_decrease_min": 0.5}
+      "acceptance": {"actor_motion_m_min": 2.0, "min_abs_relative_lateral_m_max": 0.8, "distance_to_ego_decrease_min": 1.0}
     },
     {
       "id": "vru_longitudinal_intrusion",
@@ -82,7 +82,7 @@
       "actor_kinds": ["pedestrian", "walker", "cyclist"],
       "keywords": ["行人", "骑行", "自行车", "向前", "纵向", "沿自车", "加速", "进入前方"],
       "match": {"relative_positions": ["front-left", "front-right", "front"], "max_longitudinal_m": 20.0},
-      "acceptance": {"actor_motion_m_min": 1.0, "min_distance_to_ego_m_max": 8.0, "distance_to_ego_decrease_min": 0.5}
+      "acceptance": {"actor_motion_m_min": 2.0, "min_distance_to_ego_m_max": 6.0, "distance_to_ego_decrease_min": 1.0}
     },
     {
       "id": "vru_emerge_from_occlusion",
@@ -92,7 +92,7 @@
       "actor_kinds": ["pedestrian", "walker", "cyclist"],
       "keywords": ["行人", "骑行", "遮挡", "盲区", "A柱", "突然出现", "未观察到"],
       "match": {"relative_positions": ["front-left", "front-right", "left", "right"], "max_longitudinal_m": 25.0},
-      "acceptance": {"actor_motion_m_min": 1.0, "min_distance_to_ego_m_max": 8.0}
+      "acceptance": {"actor_motion_m_min": 2.0, "min_distance_to_ego_m_max": 6.0}
     },
     {
       "id": "side_vehicle_cut_in",
@@ -102,7 +102,7 @@
       "actor_kinds": ["vehicle"],
       "keywords": ["侧车", "侧方", "变道", "切入", "并线", "车道空间"],
       "match": {"relative_positions": ["front-left", "front-right", "left", "right"], "max_abs_lateral_m": 6.0},
-      "acceptance": {"relative_lateral_delta_m_min": 1.2, "min_abs_relative_lateral_m_max": 2.2}
+      "acceptance": {"relative_lateral_delta_m_min": 2.0, "min_abs_relative_lateral_m_max": 0.8}
     },
     {
       "id": "side_vehicle_drift_intrusion",
@@ -112,7 +112,7 @@
       "actor_kinds": ["vehicle"],
       "keywords": ["侧车", "偏移", "压线", "侵入", "车道空间"],
       "match": {"relative_positions": ["front-left", "front-right", "left", "right"], "max_abs_lateral_m": 6.0},
-      "acceptance": {"relative_lateral_delta_m_min": 0.8, "min_abs_relative_lateral_m_max": 2.5}
+      "acceptance": {"relative_lateral_delta_m_min": 1.5, "min_abs_relative_lateral_m_max": 0.8}
     },
     {
       "id": "static_obstacle_in_path",
@@ -122,7 +122,7 @@
       "actor_kinds": ["obstacle", "static", "vehicle"],
       "keywords": ["障碍", "静止", "停在", "阻挡", "路径"],
       "match": {"relative_positions": ["front", "front-left", "front-right"], "max_longitudinal_m": 20.0},
-      "acceptance": {"min_obstacle_distance_to_ego_m_max": 12.0}
+      "acceptance": {"min_obstacle_distance_to_ego_m_max": 8.0}
     },
     {
       "id": "cargo_drop_into_path",
@@ -132,7 +132,7 @@
       "actor_kinds": ["payload", "cargo", "object", "vehicle"],
       "keywords": ["货物", "掉落", "滑落", "飞出", "载荷", "绳索"],
       "match": {"relative_positions": ["front", "front-left", "front-right"], "max_longitudinal_m": 35.0},
-      "acceptance": {"payload_count_min": 1, "payload_motion_m_min": 0.5}
+      "acceptance": {"payload_count_min": 1, "payload_motion_m_min": 1.5}
     },
     {
       "id": "ego_continue_toward_hazard",
@@ -143,7 +143,7 @@
       "hazard_actor_kinds": ["vehicle", "pedestrian", "walker", "cyclist", "obstacle"],
       "keywords": ["未减速", "继续", "直行", "未观察到", "反应延迟", "碰撞不可避免"],
       "match": {"hazard_relative_positions": ["front", "front-left", "front-right"], "max_longitudinal_m": 20.0},
-      "acceptance": {"ego_speed_near_trigger_min": 1.0, "distance_to_hazard_decrease_min": 0.5, "min_distance_to_hazard_m_max": 4.0}
+      "acceptance": {"ego_speed_near_trigger_min": 2.0, "distance_to_hazard_decrease_min": 1.0, "min_distance_to_hazard_m_max": 3.0}
     },
     {
       "id": "ego_insufficient_braking",
@@ -154,7 +154,7 @@
       "hazard_actor_kinds": ["vehicle", "pedestrian", "walker", "cyclist", "obstacle"],
       "keywords": ["制动不足", "刹车不足", "反应不及", "距离不足"],
       "match": {"hazard_relative_positions": ["front", "front-left", "front-right"], "max_longitudinal_m": 25.0},
-      "acceptance": {"ego_speed_near_trigger_min": 0.5, "distance_to_hazard_decrease_min": 0.5}
+      "acceptance": {"ego_speed_near_trigger_min": 2.0, "distance_to_hazard_decrease_min": 1.0}
     },
     {
       "id": "lead_turn_reveals_vru",
@@ -164,7 +164,7 @@
       "actor_kinds": ["pedestrian", "walker", "cyclist"],
       "keywords": ["前车", "左转", "遮挡", "行人", "暴露", "出现", "复合", "罕见"],
       "match": {"relative_positions": ["front-left", "front-right", "left", "right", "front"], "max_longitudinal_m": 25.0},
-      "acceptance": {"actor_motion_m_min": 1.0, "min_distance_to_ego_m_max": 8.0}
+      "acceptance": {"actor_motion_m_min": 2.0, "min_distance_to_ego_m_max": 6.0}
     },
     {
       "id": "rare_side_vehicle_unexpected_intrusion",
@@ -174,7 +174,7 @@
       "actor_kinds": ["vehicle"],
       "keywords": ["侧方", "横向", "掉头", "逆行", "非典型", "侵入", "罕见"],
       "match": {"relative_positions": ["front-left", "front-right", "left", "right"], "max_abs_lateral_m": 7.0},
-      "acceptance": {"relative_lateral_delta_m_min": 1.2, "min_abs_relative_lateral_m_max": 2.2}
+      "acceptance": {"relative_lateral_delta_m_min": 2.0, "min_abs_relative_lateral_m_max": 0.8}
     },
     {
       "id": "rare_object_unexpected_intrusion",
@@ -184,7 +184,7 @@
       "actor_kinds": ["obstacle", "static", "payload", "object", "vehicle"],
       "keywords": ["异物", "障碍", "货物", "掉落", "散落", "非典型", "罕见"],
       "match": {"relative_positions": ["front", "front-left", "front-right"], "max_longitudinal_m": 25.0},
-      "acceptance": {"min_obstacle_distance_to_ego_m_max": 12.0}
+      "acceptance": {"min_obstacle_distance_to_ego_m_max": 8.0}
     },
     {
       "id": "sudden_night_visibility_loss",
@@ -194,7 +194,7 @@
       "actor_kinds": ["ego"],
       "keywords": ["天气", "黑夜", "夜间", "光照", "可见度", "视距", "突然变暗"],
       "match": {},
-      "acceptance": {"sun_altitude_angle_max": -10.0, "visibility_degraded": true}
+      "acceptance": {"sun_altitude_angle_max": -25.0, "visibility_degraded": true}
     }
   ],
   "action_primitives": [
@@ -202,11 +202,11 @@
       "id": "front_vehicle_brake_after_trigger",
       "actor_role": "front_vehicle",
       "motion_frame": "lane_following",
-      "front_initial_speed_mps": 8.0,
+      "front_initial_speed_mps": 10.0,
       "target_speed_mps": 0.0,
       "brake_intensity": 1.0,
-      "trigger_frame": 40,
-      "trigger_seconds": 2.0,
+      "trigger_frame": 30,
+      "trigger_seconds": 1.5,
       "direction": {"frame": "ego_local", "longitudinal_m": 14.0, "lateral_m": 0.0, "heading_delta_deg": 0.0},
       "acceptance_checks": ["front_vehicle_speed_drop", "front_vehicle_initially_ahead"]
     },
@@ -214,17 +214,21 @@
       "id": "front_vehicle_slow_or_stop",
       "controlled_actor_role": "front_vehicle",
       "motion_frame": "lane_following",
-      "velocity_vector": {"speed_policy": "maintain_low_or_stop"},
+      "velocity_vector": {"speed_policy": "hard_stop"},
       "direction_policy": "keep_lane",
-      "stop_condition": "timeout",
+      "target_speed_mps": 0.0,
+      "brake_intensity": 1.0,
+      "stop_condition": "hard_stop_or_timeout",
       "acceptance_checks": ["front_vehicle_initially_ahead", "front_distance_change"]
     },
     {
       "id": "vru_cross_lateral_into_path",
       "controlled_actor_role": "vulnerable_actor",
       "motion_frame": "ego_local",
-      "velocity_vector": {"lateral_direction": "toward_ego_lane", "longitudinal_policy": "maintain_or_reduce_distance"},
+      "velocity_vector": {"lateral_direction": "toward_ego_lane", "longitudinal_policy": "maintain_or_reduce_distance", "speed_policy": "aggressive_crossing"},
       "direction_policy": "reduce_abs_lateral_to_ego",
+      "crossing_speed_mps": 2.8,
+      "target_relative_lateral_m": 0.0,
       "stop_condition": "reached_ego_lane_or_timeout",
       "acceptance_checks": ["vulnerable_actor_moves_after_trigger", "vulnerable_actor_moves_toward_ego_lane", "vulnerable_actor_approaches_ego"]
     },
@@ -232,8 +236,9 @@
       "id": "vru_move_longitudinal_in_path",
       "controlled_actor_role": "vulnerable_actor",
       "motion_frame": "ego_local",
-      "velocity_vector": {"longitudinal_direction": "toward_conflict_point", "lateral_policy": "enter_or_remain_near_ego_lane"},
+      "velocity_vector": {"longitudinal_direction": "toward_conflict_point", "lateral_policy": "enter_or_remain_near_ego_lane", "speed_policy": "aggressive_intrusion"},
       "direction_policy": "reduce_distance_to_ego_or_conflict_point",
+      "speed_mps": 2.8,
       "stop_condition": "min_distance_or_timeout",
       "acceptance_checks": ["vulnerable_actor_moves_after_trigger", "vulnerable_actor_approaches_ego"]
     },
@@ -241,8 +246,10 @@
       "id": "vru_emerge_from_occlusion_into_path",
       "controlled_actor_role": "vulnerable_actor",
       "motion_frame": "ego_local",
-      "velocity_vector": {"direction": "from_occluder_toward_ego_path"},
+      "velocity_vector": {"direction": "from_occluder_toward_ego_path", "speed_policy": "aggressive_emerge"},
       "direction_policy": "enter_ego_path_from_occluded_side",
+      "emerge_speed_mps": 2.8,
+      "target_relative_lateral_m": 0.0,
       "stop_condition": "visible_in_ego_path_or_timeout",
       "acceptance_checks": ["vulnerable_actor_moves_after_trigger", "vulnerable_actor_close_enough"]
     },
@@ -250,18 +257,22 @@
       "id": "side_vehicle_cut_in_to_ego_lane",
       "controlled_actor_role": "side_vehicle",
       "motion_frame": "ego_local",
-      "velocity_vector": {"lateral_direction": "toward_ego_lane", "longitudinal_policy": "forward"},
+      "velocity_vector": {"lateral_direction": "toward_ego_lane", "longitudinal_policy": "forward", "lateral_speed_policy": "aggressive_cut_in"},
       "direction_policy": "reduce_abs_lateral_to_ego",
-      "stop_condition": "reached_ego_lane_or_timeout",
+      "lateral_speed_mps": 1.5,
+      "target_relative_lateral_abs_m": 0.5,
+      "stop_condition": "reached_target_lateral_or_timeout",
       "acceptance_checks": ["side_vehicle_enters_ego_lane"]
     },
     {
       "id": "side_vehicle_drift_toward_ego_lane",
       "controlled_actor_role": "side_vehicle",
       "motion_frame": "ego_local",
-      "velocity_vector": {"lateral_direction": "toward_ego_lane", "lateral_speed_policy": "slow_drift"},
+      "velocity_vector": {"lateral_direction": "toward_ego_lane", "lateral_speed_policy": "aggressive_intrusion"},
       "direction_policy": "reduce_abs_lateral_to_ego",
-      "stop_condition": "timeout",
+      "lateral_speed_mps": 1.2,
+      "target_relative_lateral_abs_m": 0.5,
+      "stop_condition": "reached_target_lateral_or_timeout",
       "acceptance_checks": ["side_vehicle_enters_ego_lane"]
     },
     {
@@ -277,8 +288,9 @@
       "id": "cargo_drop_or_slide_into_path",
       "controlled_actor_role": "payload",
       "motion_frame": "ego_local",
-      "velocity_vector": {"direction": "toward_ego_path_or_downward_drop"},
+      "velocity_vector": {"direction": "toward_ego_path_or_downward_drop", "speed_policy": "aggressive_slide_or_drop"},
       "direction_policy": "enter_ego_path",
+      "speed_mps": 3.0,
       "stop_condition": "path_blocked_or_timeout",
       "acceptance_checks": ["payload_present", "payload_motion"]
     },
@@ -286,8 +298,9 @@
       "id": "ego_continue_without_braking",
       "controlled_actor_role": "ego",
       "motion_frame": "lane_following",
-      "velocity_vector": {"speed_policy": "maintain_current_speed", "longitudinal_direction": "forward"},
+      "velocity_vector": {"speed_policy": "maintain_or_accelerate_toward_hazard", "longitudinal_direction": "forward"},
       "direction_policy": "follow_lane_toward_hazard",
+      "brake_intensity_max": 0.0,
       "stop_condition": "min_distance_or_timeout",
       "acceptance_checks": ["ego_moving_near_trigger", "distance_to_hazard_decreases"]
     },
@@ -297,6 +310,7 @@
       "motion_frame": "lane_following",
       "velocity_vector": {"speed_policy": "delayed_or_partial_deceleration", "longitudinal_direction": "forward"},
       "direction_policy": "follow_lane_toward_hazard",
+      "brake_intensity_max": 0.25,
       "stop_condition": "late_brake_or_timeout",
       "acceptance_checks": ["ego_moving_near_trigger", "distance_to_hazard_decreases"]
     },
@@ -304,8 +318,8 @@
       "id": "weather_shift_to_night",
       "controlled_actor_role": "environment",
       "motion_frame": "world",
-      "trigger_frame": 40,
-      "weather": {"sun_altitude_angle": -25.0, "cloudiness": 80.0, "fog_density": 20.0},
+      "trigger_frame": 30,
+      "weather": {"sun_altitude_angle": -35.0, "cloudiness": 95.0, "fog_density": 45.0},
       "direction": {"frame": "world", "longitudinal_mps": 0.0, "lateral_mps": 0.0, "heading_delta_deg": 0.0},
       "stop_condition": "timeout",
       "acceptance_checks": ["weather_visibility_changed"]

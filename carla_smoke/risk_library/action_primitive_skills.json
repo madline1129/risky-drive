@@ -15,8 +15,9 @@
       "parameter_rules": [
         "direction.longitudinal_m must equal the selected/generated front vehicle relative_longitudinal_m.",
         "direction.lateral_m must equal the selected/generated front vehicle relative_lateral_m.",
-        "front_initial_speed_mps should use the actor current speed if available, otherwise use 8.0.",
-        "target_speed_mps should be 0.0 for hard brake; brake_intensity should be 1.0."
+        "front_initial_speed_mps should use max(actor current speed, 10.0) if available, otherwise use 10.0.",
+        "target_speed_mps must be 0.0 for hard brake; brake_intensity must be 1.0.",
+        "Use the earliest valid trigger frame from the event chain so the hazard develops quickly."
       ],
       "fallback_when_no_l0_actor_matches": {
         "source": "generated_object",
@@ -37,8 +38,9 @@
       },
       "required_action_fields": ["target_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m"],
       "parameter_rules": [
-        "Use a low target speed between 0.0 and 2.0 m/s.",
-        "Keep lateral direction at 0.0 relative to the lane."
+        "Use target_speed_mps=0.0 and brake_intensity=1.0; this is an aggressive stop, not gentle slowing.",
+        "Keep lateral direction at 0.0 relative to the lane.",
+        "Use the earliest valid trigger frame from the event chain."
       ],
       "fallback_when_no_l0_actor_matches": {
         "source": "generated_object",
@@ -62,8 +64,8 @@
         "Do not select an L0 pedestrian behind ego for a forward crossing event.",
         "direction.longitudinal_m must be positive and match the primary actor relative_longitudinal_m.",
         "direction.lateral_m must match the primary actor relative_lateral_m and preserve left/right side.",
-        "target_relative_lateral_m should be 0.0 for entering ego lane.",
-        "crossing_speed_mps should usually be 1.2 to 2.0."
+        "target_relative_lateral_m must be 0.0 for entering ego lane.",
+        "crossing_speed_mps should be aggressive, at least 2.8 m/s."
       ],
       "fallback_when_no_l0_actor_matches": {
         "source": "generated_object",
@@ -84,7 +86,7 @@
       },
       "required_action_fields": ["speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m"],
       "parameter_rules": [
-        "Use positive forward or conflict-point-directed speed.",
+        "Use aggressive positive forward or conflict-point-directed speed, at least 2.8 m/s.",
         "The actor must start ahead or near-ahead, not behind ego."
       ],
       "fallback_when_no_l0_actor_matches": {
@@ -107,7 +109,8 @@
       "required_action_fields": ["emerge_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m"],
       "parameter_rules": [
         "Preserve the occluded side from L3/L0.",
-        "The actor should emerge from the side into ego path, so target lateral is near 0.0."
+        "The actor should emerge rapidly from the side into ego path, so target lateral is near 0.0.",
+        "emerge_speed_mps should be aggressive, at least 2.8 m/s."
       ],
       "fallback_when_no_l0_actor_matches": {
         "source": "generated_object",
@@ -129,7 +132,8 @@
       "required_action_fields": ["lateral_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m", "target_relative_lateral_m"],
       "parameter_rules": [
         "direction.lateral_m must preserve the side vehicle's original side.",
-        "target_relative_lateral_m should move toward 0.0."
+        "target_relative_lateral_m should move deep toward ego lane, around signed 0.5 m from ego centerline.",
+        "lateral_speed_mps should be aggressive, at least 1.5 m/s."
       ],
       "fallback_when_no_l0_actor_matches": {
         "source": "generated_object",
@@ -150,8 +154,9 @@
       },
       "required_action_fields": ["lateral_speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m", "target_relative_lateral_m"],
       "parameter_rules": [
-        "Use a slow lateral drift, typically 0.3 to 0.8 m/s.",
-        "Do not place the vehicle already in ego lane."
+        "Use an aggressive lane intrusion drift, at least 1.2 m/s lateral speed.",
+        "Do not place the vehicle already in ego lane.",
+        "target_relative_lateral_m should move deep toward ego lane, around signed 0.5 m from ego centerline."
       ],
       "fallback_when_no_l0_actor_matches": {
         "source": "generated_object",
@@ -194,7 +199,8 @@
       },
       "required_action_fields": ["speed_mps", "trigger_frame", "direction.longitudinal_m", "direction.lateral_m"],
       "parameter_rules": [
-        "Payload should start ahead or on a front vehicle, then move into ego path.",
+        "Payload should start ahead or on a front vehicle, then move aggressively into ego path.",
+        "speed_mps should be at least 3.0 when the payload slides or moves laterally.",
         "Do not start behind ego."
       ],
       "fallback_when_no_l0_actor_matches": {

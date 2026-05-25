@@ -18,6 +18,8 @@ Generate `generated_risk_scene.scenic` for the ChatScene L4 backend.
 - Never use tolerance shorthand like `12.352 +/- 1.0`; Scenic does not support that syntax. Use `Range(11.352, 13.352)` instead.
 - In `following roadDirection from ego for ...`, the distance must be a numeric literal or `Range(lower, upper)`, for example `following roadDirection from ego for Range(11.352, 13.352)`.
 - Preserve `l4_task.risk.scenario_type`, primary actor kind/type, ego-relative side, trigger frame, and every numeric field in `l4_task.actions.action_primitive`.
+- Implement primary risk actions aggressively. Do not weaken high lateral/crossing speeds, hard braking, target-lane intrusion depth, or no-braking ego behavior into gentle lane following.
+- Define every `behavior`, `monitor`, helper function, and constant before the first object declaration or `with behavior ...` reference that uses it. Scenic does not allow forward references to behavior names.
 - If exact absolute placement fails, adjust only within `actor.relative_to_ego.same_side_search_policy`; never flip left/right.
 - L0 absolute pose is a hint. Ego-relative geometry and the requested risk action are authoritative.
 - The scene must be executable by `carla_smoke/scenes/safebench_scenic_scene.py`.
@@ -29,9 +31,10 @@ Generate `generated_risk_scene.scenic` for the ChatScene L4 backend.
 - `spawn_actor_relative`: create the primary/background actor while preserving relative longitudinal/lateral relation to ego.
 - `front_vehicle_brake`: front actor starts ahead at `action_primitive.direction.longitudinal_m/lateral_m`, moves at `front_initial_speed_mps`, then applies `brake_intensity` after `trigger_frame`/`trigger_seconds` until it reaches `target_speed_mps`.
 - `vulnerable_actor_intrusion`: vulnerable actor moves toward or into ego lane after trigger.
-- `side_vehicle_intrusion`: side vehicle moves/cuts toward ego lane after trigger.
+- `side_vehicle_intrusion`: side vehicle aggressively moves/cuts toward the target ego-lane lateral position after trigger.
 - `cargo_drop` / `road_obstacle_intrusion`: visible object enters or blocks ego path after trigger.
 - `ego_action_risk`: ego keeps moving toward the primary hazard actor after trigger, without changing the hazard actor identity or side.
+- `weather_visibility_change`: no physical primary actor; use `simulation().world.get_weather()` / `set_weather(...)` in a behavior or monitor whose definition appears before it is referenced.
 
 ## Trace Target
 

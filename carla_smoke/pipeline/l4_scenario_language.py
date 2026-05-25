@@ -710,6 +710,7 @@ Requirements:
 - Preserve existing `ego = ...` and `primary_actor = ...` spawn declarations exactly. Do not replace them with `ego offset by`, `left of ego`, `right of ego`, or a newly sampled intersection/lane spawn.
 - Add or edit only behavior/timing declarations and scenario logic needed to realize the action primitive and pass validation.
 - Follow l4_task.actions.action_primitive as the hard action primitive.
+- Implement primary risk actions aggressively. Do not weaken high lateral/crossing speeds, hard braking, target-lane intrusion depth, or no-braking ego behavior into gentle lane following.
 - Use l4_task.scene_context.map_absolute_path exactly in `param map = localPath(...)`.
 - Use the precomputed `actor.scenic_position_expression` and `actor.scenic_heading` from l4_task; never convert raw CARLA x/y/yaw yourself.
 - Never write tolerance shorthand like `12.352 +/- 1.0`; Scenic ranges must be written as `Range(11.352, 13.352)`.
@@ -719,6 +720,7 @@ Requirements:
 - Preserve l4_task.risk.scenario_type exactly.
 - Preserve primary actor kind/type, ego-relative geometry, concrete action primitive, numeric direction, speed, brake intensity, and trigger timing.
 - For weather_visibility_change, implement the environment/weather action directly; do not invent a physical primary actor.
+- Define every `behavior`, `monitor`, helper function, and constant before the first object declaration or `with behavior ...` reference that uses it. Scenic does not allow forward references to behavior names.
 - L0 absolute coordinates are hints; relative geometry is authoritative.
 - The generated Scenic must run through carla_smoke/scenes/safebench_scenic_scene.py.
 - Do not write Markdown. Do not ask questions. Edit only generated_risk_scene.scenic.
@@ -750,6 +752,7 @@ Repair the Scenic file in place.
 - Do not flip actor.relative_to_ego.side. If a left-side actor does not fit, search only left-side distances; if a right-side actor does not fit, search only right-side distances.
 - If exact absolute placement fails or Scenic cannot sample the scene, stop hard-coding the failed absolute point. Use ego-relative placement and same-side nearby search while preserving actor type, side, and front/rear relation.
 - If this is a semantic validation failure, use the failed checks in Repair feedback as the repair target. Each failed check includes target, actual, and reason; edit the Scenic scenario so those checks pass.
+- If a behavior name is undefined, move or add the corresponding `behavior ...` definition before the object declaration that uses `with behavior ...`; do not leave forward references.
 - Do not satisfy semantic validation by changing l4_task.json, semantic_primitives.json, event_trace.json, actor type, or scenario_type. Fix only generated_risk_scene.scenic.
 - If a parameter used in range(...) can be float, cast it to int(...) or replace it with a fixed integer.
 - Do not switch to Python code.
@@ -786,7 +789,7 @@ def feedback_to_text(feedback):
 def extract_error_line(error_output):
     lines = [line.strip() for line in str(error_output or "").splitlines() if line.strip()]
     for line in reversed(lines):
-        if any(token in line for token in ("Error:", "Exception:", "InvalidScenarioError", "ScenicSyntaxError")):
+        if any(token in line for token in ("Error:", "Exception:", "InvalidScenarioError", "ScenicSyntaxError", "NameError")):
             return line
     return lines[-1] if lines else "unknown error"
 
@@ -827,6 +830,21 @@ def build_execution_repair_feedback(error_output):
                     "Prefer ego-relative placement over exact absolute coordinates.",
                     "Keep same-side geometry and actor type, but allow small nearby shifts that make Scenic sampling feasible.",
                     "Avoid combining incompatible region/container constraints.",
+                ],
+            }
+        )
+    elif "NameError" in text and "not defined" in text:
+        missing_name_match = re.search(r"NameError:\s+name ['\"]([^'\"]+)['\"] is not defined", text)
+        missing_name = missing_name_match.group(1) if missing_name_match else None
+        feedback.update(
+            {
+                "issue": "Generated Scenic code references a name before defining it.",
+                "missing_name": missing_name,
+                "repair_requirements": [
+                    "Define every behavior, monitor, helper function, and constant before the first use.",
+                    "If the missing name is a behavior, move or add the full `behavior ...` block above the object declaration using `with behavior ...`.",
+                    "Do not rename the behavior only at the call site; keep the definition and use site consistent.",
+                    "For weather_visibility_change, no physical primary actor is required; the weather trigger behavior/monitor may be attached to an existing background actor or implemented as a monitor, but it must be defined before use.",
                 ],
             }
         )
@@ -1362,6 +1380,12 @@ def validate_scenario_language_event_trace(config, primitives, trace):
 
     if frames and after and scenario_type == "side_vehicle_intrusion":
         laterals = numeric_values(after, "relative_lateral_m")
+        success_criteria = config.get("success_criteria") if isinstance(config.get("success_criteria"), dict) else {}
+        action = config.get("action_primitive") if isinstance(config.get("action_primitive"), dict) else {}
+        initial_lat = as_float((primary.get("relative_to_ego") or {}).get("lateral_m"), as_float(primary.get("relative_lateral_m")))
+        target_lat = as_float(action.get("target_relative_lateral_m"))
+        min_delta = as_float(success_criteria.get("relative_lateral_delta_m_min"), 1.5)
+        max_abs_lateral = as_float(success_criteria.get("min_abs_relative_lateral_m_max"), 0.8)
         append_check(
             checks,
             "side_vehicle_lateral_present",
@@ -1373,11 +1397,31 @@ def validate_scenario_language_event_trace(config, primitives, trace):
         append_check(
             checks,
             "side_vehicle_enters_ego_lane",
-            {"max_abs_lateral_m": 2.5},
+            {"max_abs_lateral_m": max_abs_lateral},
             {"min_abs_lateral_m": min(abs(value) for value in laterals) if laterals else None},
-            bool(laterals and min(abs(value) for value in laterals) <= 2.5),
+            bool(laterals and min(abs(value) for value in laterals) <= max_abs_lateral),
             "side vehicle did not enter ego lane laterally",
         )
+        if initial_lat is not None:
+            max_delta = max((abs(initial_lat - value) for value in laterals), default=0.0)
+            append_check(
+                checks,
+                "side_vehicle_lateral_delta",
+                {"min_lateral_delta_m": min_delta, "initial_lateral_m": initial_lat},
+                {"max_lateral_delta_m": max_delta},
+                max_delta >= min_delta,
+                "side vehicle lateral movement was too small",
+            )
+        if target_lat is not None:
+            min_target_error = min((abs(value - target_lat) for value in laterals), default=None)
+            append_check(
+                checks,
+                "side_vehicle_reaches_target_lateral",
+                {"target_relative_lateral_m": target_lat, "tolerance_m": 0.4},
+                {"min_target_error_m": min_target_error},
+                bool(min_target_error is not None and min_target_error <= 0.4),
+                "side vehicle did not reach the target relative lateral position",
+            )
 
     report = {
         "passed": all(check.get("passed") for check in checks),
