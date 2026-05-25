@@ -755,11 +755,15 @@ Requirements:
 - Use the precomputed `actor.scenic_position_expression` and `actor.scenic_heading` from l4_task; never convert raw CARLA x/y/yaw yourself.
 - Never write tolerance shorthand like `12.352 +/- 1.0`; Scenic ranges must be written as `Range(11.352, 13.352)`.
 - In `following roadDirection from ego for ...`, use a numeric literal or `Range(lower, upper)`, never `a +/- b`.
-- Scenic API whitelist:
-  - Time: use only `simulation().currentTime`; never `simulation().current_time`, `current_frame`, or guessed frame fields.
-  - Actor constructors: `Car` only for `vehicle.*`, `Pedestrian` only for `walker.*`, `Prop` for `static.prop.*`; never write `Car` with a `static.prop.*` blueprint.
-  - Allowed actions/behaviors: `FollowLaneBehavior`, `LaneChangeBehavior`, `SetThrottleAction`, `SetBrakeAction`, `SetSteerAction`, `SetReverseAction`, `SetHandBrakeAction`, `SetWalkingDirectionAction`, `SetWalkingSpeedAction`.
-  - Weather changes may use `simulation().world.get_weather()` and `simulation().world.set_weather(weather)`.
+- Scenic syntax/API library:
+  - Time: use only integer-step `simulation().currentTime`; compare it to `trigger_frame`/`TRIGGER_FRAME`, not seconds. Never use `simulation().current_time`, `current_frame`, `frame_id`, or `time_step`.
+  - `wait` takes no numeric argument. Write `wait`, never `wait 0.05` or `wait(0.05)`.
+  - `do` is only for behaviors: `FollowLaneBehavior`, `LaneChangeBehavior`, `AutopilotBehavior`, `WalkForwardBehavior`, `CrossingBehavior`, or behaviors defined in the file.
+  - `take` is only for actions: `SetThrottleAction`, `SetBrakeAction`, `SetSteerAction`, `SetReverseAction`, `SetHandBrakeAction`, `SetAutopilotAction`, `SetTrafficLightAction`, `SetWalkingDirectionAction`, `SetWalkingSpeedAction`, `SetSpeedAction`, `SetVelocityAction`, `OffsetAction`.
+  - Never write `do SetThrottleAction(...)` or `take FollowLaneBehavior(...)`.
+  - Actor constructors: `Car` only for `vehicle.*`, `Pedestrian` for `walker.*`, `Prop` for `static.prop.*`; never write `Car` with a `static.prop.*` blueprint.
+  - Persistent control must be in `while True:` or a trigger loop with repeated `take ...` statements.
+  - Weather changes may use `simulation().world.get_weather()`, assign weather fields, then `simulation().world.set_weather(weather)`.
 - Prefer `actor.relative_to_ego` for L0 actors. If exact placement fails, use `same_side_search_policy` and keep the original left/right side.
 - Do not over-constrain Scenic placement around one absolute point. Absolute L0 poses are hints; ego-relative same-side geometry is the acceptance target.
 - Preserve l4_task.risk.scenario_type exactly.
@@ -802,6 +806,10 @@ Repair the Scenic file in place.
 - If this is a semantic validation failure, use the failed checks in Repair feedback as the repair target. Each failed check includes target, actual, and reason; edit the Scenic scenario so those checks pass.
 - If a behavior name is undefined, move or add the corresponding `behavior ...` definition before the object declaration that uses `with behavior ...`; do not leave forward references.
 - If timing logic uses `simulation().current_time`, replace it with Scenic's supported `simulation().currentTime`.
+- If a Scenic action is written with `do`, replace it with `take`; examples: `do SetThrottleAction(...)` is invalid, `take SetThrottleAction(...)` is valid.
+- If a Scenic behavior is written with `take`, replace it with `do`; examples: `take FollowLaneBehavior(...)` is invalid, `do FollowLaneBehavior(...)` is valid.
+- If code uses `wait 0.05`, `wait 0.1`, or `wait(...)`, replace it with plain `wait`.
+- If timing compares `simulation().currentTime` to seconds, replace the threshold with a frame count from `trigger_frame`/`TRIGGER_FRAME`.
 - If a static blueprint such as `static.prop.*` is declared as `Car`, replace it with `Prop`; keep `Car` for `vehicle.*` and `Pedestrian` for `walker.*`.
 - Never use `require <object> do <Behavior>()`; replace it with `with behavior Behavior(...)` in the relevant object declaration, or remove the ego behavior entirely when ego is Traffic-Manager controlled.
 - Do not satisfy semantic validation by changing l4_task.json, semantic_primitives.json, event_trace.json, actor type, or scenario_type. Fix only generated_risk_scene.scenic.
@@ -822,6 +830,44 @@ def run_command(command, capture_output=False, env=None):
         return result
     subprocess.run(command, check=True, env=env)
     return None
+
+
+def validate_scenic_api_whitelist(scenic_file):
+    with open(scenic_file, "r", encoding="utf-8") as f:
+        text = f.read()
+    violations = []
+    behavior_names = {
+        "FollowLaneBehavior",
+        "LaneChangeBehavior",
+        "AutopilotBehavior",
+        "WalkForwardBehavior",
+        "WalkBehavior",
+        "CrossingBehavior",
+    }
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if re.search(r"simulation\(\)\.current_time\b|\bcurrent_frame\b|\bframe_id\b|\btime_step\b", stripped):
+            violations.append((line_number, "use simulation().currentTime only for Scenic time"))
+        if re.match(r"do\s+\w*Action\s*\(", stripped):
+            violations.append((line_number, "Scenic actions must use `take`, not `do`"))
+        if any(re.match(rf"take\s+{name}\s*\(", stripped) for name in behavior_names):
+            violations.append((line_number, "Scenic behaviors must use `do`, not `take`"))
+        if re.match(r"wait\s+.+", stripped):
+            violations.append((line_number, "Scenic `wait` takes no numeric argument; use plain `wait`"))
+        if re.search(r"require\s+\w+\s+do\b", stripped):
+            violations.append((line_number, "`require <object> do <Behavior>()` is invalid Scenic syntax"))
+    if re.search(r"=\s*Car\b[\s\S]{0,240}?with blueprint\s+['\"]static\.prop\.", text):
+        violations.append((None, "static.prop.* blueprints must use `Prop`, not `Car`"))
+    if violations:
+        rendered = []
+        for line_number, message in violations[:12]:
+            prefix = f"line {line_number}: " if line_number else ""
+            rendered.append(prefix + message)
+        if len(violations) > 12:
+            rendered.append(f"... and {len(violations) - 12} more whitelist violations")
+        raise RuntimeError("Scenic API whitelist violation: " + "; ".join(rendered))
 
 
 def error_text(exc):
@@ -1768,6 +1814,7 @@ def run_scenic_with_repair(args, task_path, primitives_path, scenic_file, images
     last_error = ""
     for attempt in range(args.opencode_repair_attempts + 1):
         try:
+            validate_scenic_api_whitelist(scenic_file)
             run_scenic_capture(args, scenic_file, images_dir)
             return
         except (subprocess.CalledProcessError, RuntimeError) as exc:
@@ -1945,6 +1992,7 @@ def run_scenic_validate_with_repair(args, task_path, primitives_path, scenic_fil
     for attempt in range(args.opencode_repair_attempts + 1):
         trace = None
         try:
+            validate_scenic_api_whitelist(scenic_file)
             run_scenic_capture(args, scenic_file, images_dir)
             postprocess_images(images_dir)
             trace = write_event_trace_from_states(images_dir, config, primitives)

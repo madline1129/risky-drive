@@ -26,26 +26,86 @@ Generate `generated_risk_scene.scenic` for the ChatScene L4 backend.
 - L0 absolute pose is a hint. Ego-relative geometry and the requested risk action are authoritative.
 - The scene must be executable by `carla_smoke/scenes/safebench_scenic_scene.py`.
 
-## Scenic API Whitelist
+## Scenic Syntax/API Library
 
-Use only these Scenic/CARLA API forms unless the input file already contains a proven equivalent:
+Use this project-specific Scenic subset. Do not invent Scenic APIs outside this list.
 
-- Header/model: `Town = "Town05"`, `param map = localPath("...")`, `param carla_map = Town`, `model scenic.simulators.carla.model`.
-- Actor constructors: `Car` for `vehicle.*`, `Pedestrian` for `walker.*`, `Prop` for `static.prop.*`; never use `Car` with a `static.prop.*` blueprint.
-- Actor specifiers: `at (x @ y)`, `with heading ... deg`, `with regionContainedIn None`, `with blueprint "..."`, `with behavior BehaviorName(...)`.
-- Timing: `simulation().currentTime` only. One Scenic time step is one frame in this executor.
-- Built-in driving behaviors/actions: `FollowLaneBehavior(target_speed=...)`, `LaneChangeBehavior(laneSectionToSwitch=..., target_speed=...)`, `SetThrottleAction(...)`, `SetBrakeAction(...)`, `SetSteerAction(...)`, `SetReverseAction(...)`, `SetHandBrakeAction(...)`.
-- Walker actions: `SetWalkingDirectionAction(...)`, `SetWalkingSpeedAction(...)`.
-- Weather: `simulation().world.get_weather()`, mutate `carla.WeatherParameters` fields from `action_primitive.weather`, then call `simulation().world.set_weather(weather)`.
-- Geometry helpers: `network.laneSectionAt(actor)`, `OrientedPoint following roadDirection from ego for <number or Range(...)>`, `left of ... by ...`, `right of ... by ...`.
+### File Header
 
-Forbidden forms:
+- `Town = "Town05"`
+- `param map = localPath("...Town05.xodr")`
+- `param carla_map = Town`
+- `model scenic.simulators.carla.model`
+- Constants are plain assignments before behavior/object declarations, e.g. `TRIGGER_FRAME = 30`.
 
-- `simulation().current_time`, `current_frame`, `time_step`, or other guessed time fields.
+### Actor Constructors And Specifiers
+
+- Vehicle blueprints `vehicle.*`: use `Car`.
+- Walker blueprints `walker.*`: use `Pedestrian`.
+- Static prop blueprints `static.prop.*`: use `Prop`.
+- Do not use `Car` with a `static.prop.*` blueprint.
+- Allowed object declaration form:
+  - `name = Car at (x @ y),`
+  - `    with heading h deg,`
+  - `    with regionContainedIn None,`
+  - `    with blueprint "vehicle....",`
+  - `    with behavior BehaviorName(...)`
+- `with behavior ...` is allowed only in object declarations. Do not attach a custom behavior to `ego` unless `scenario_type` is `ego_action_risk`.
+
+### Behavior Syntax
+
+- Define every behavior before the first object declaration that references it.
+- `behavior Name(arg1, arg2):` starts a behavior block.
+- Use `do SomeBehavior(...)` only for Scenic behaviors such as `FollowLaneBehavior(...)`, `LaneChangeBehavior(...)`, `AutopilotBehavior()`, `WalkForwardBehavior(...)`, `CrossingBehavior(...)`, or a behavior defined in the file.
+- Use `take Action(...)` for actions. Never use `do SetThrottleAction(...)`, `do SetBrakeAction(...)`, `do SetReverseAction(...)`, etc.
+- Multiple actions in one step are written as one `take` statement: `take SetThrottleAction(0.8), SetBrakeAction(0), SetReverseAction(False)`.
+- For persistent control, put `take ...` inside a `while True:` loop or a trigger loop.
+- `wait` takes no numeric argument. Write `wait`, not `wait 0.05` or `wait(0.05)`.
+- `simulation().currentTime` is an integer simulation step/frame. Compare it to frame constants like `TRIGGER_FRAME`, not seconds. If the task has `trigger_frame`, use that directly.
+
+### Allowed Built-In Behaviors
+
+- `FollowLaneBehavior(target_speed=...)`
+- `LaneChangeBehavior(laneSectionToSwitch=..., target_speed=...)`
+- `AutopilotBehavior()`
+- `WalkForwardBehavior(speed=...)`
+- `CrossingBehavior(reference_actor, min_speed=..., threshold=..., final_speed=...)`
+
+### Allowed Actions
+
+- General actor actions: `SetPositionAction(pos)`, `OffsetAction(offset)`, `SetVelocityAction(xVel, yVel, zVel=0)`, `SetSpeedAction(speed)`.
+- Vehicle actions: `SetThrottleAction(0..1)`, `SetBrakeAction(0..1)`, `SetSteerAction(-1..1)`, `SetReverseAction(True|False)`, `SetHandBrakeAction(True|False)`, `SetAutopilotAction(True|False)`, `SetTrafficLightAction("red"|"yellow"|"green"|"off"|"unknown")`.
+- Walker actions: `SetWalkingDirectionAction(heading)`, `SetWalkingSpeedAction(speed)`, `SetWalkAction(True|False, maxSpeed=...)`.
+- Use vehicle actions only on `Car`/vehicle actors and walker actions only on `Pedestrian` actors.
+
+### Time, Geometry, And Roads
+
+- Time: `simulation().currentTime` only.
+- Actor fields: `self.position`, `self.heading`, `self.speed`, `ego.position`, `ego.heading`.
+- Distance forms: `distance from self to ego`, `distance from self.position to some_point`, `self.distanceToClosest(Vehicle)`.
+- Road/lane helpers: `network.laneSectionAt(actor)`, `self.lane`, `ego.lane`, `roadDirection`.
+- Placement helpers: `OrientedPoint following roadDirection from ego for 10`, `... for Range(8, 12)`, `left of point by 3.5`, `right of point by 3.5`.
+- Scenic vectors use `x @ y`. Do not use 3D points in Scenic object declarations.
+
+### Weather
+
+- To change weather, use:
+  - `weather = simulation().world.get_weather()`
+  - assign supported fields from `action_primitive.weather`, such as `cloudiness`, `precipitation`, `precipitation_deposits`, `wind_intensity`, `fog_density`, `fog_distance`, `wetness`, `sun_altitude_angle`, `sun_azimuth_angle`, `dust_storm`
+  - `simulation().world.set_weather(weather)`
+- Apply weather once after the trigger using a behavior/monitor defined before use.
+
+### Forbidden Forms
+
+- `simulation().current_time`, `current_frame`, `frame_id`, `time_step`, or other guessed time fields.
+- `wait 0.05`, `sleep(...)`, Python `time.sleep(...)`.
+- `do SetThrottleAction(...)`, `do SetBrakeAction(...)`, `do SetReverseAction(...)`, or `do` with any `*Action`.
+- `take FollowLaneBehavior(...)` or `take LaneChangeBehavior(...)`.
 - `require <object> do <Behavior>()`.
 - `Point(x, y, z)`, `carla.Location(...)`, `carla.Transform(...)`.
 - `Car` with a `static.prop.*` blueprint.
-- Undefined behavior/action names or behavior definitions after the first object which uses them.
+- Undefined behavior/action names or behavior definitions after the first object that uses them.
+- Python-only control patterns such as `for i in range(...)` with Scenic dynamic actions unless the loop body is compile-time setup, not simulation control.
 
 ## Primitive Mapping
 
