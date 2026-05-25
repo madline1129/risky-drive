@@ -4,6 +4,13 @@ This workspace is isolated from the old ChatScene pipeline.
 
 OpenCode should edit only `generated_scene.scenic`.
 
+The business input is bottom-level:
+
+- `objects[].spawn` defines initial placement.
+- `objects[].motion.start_frame` or `objects[].motion.start_time_s` defines the trigger time, defaulting to `0`.
+- `objects[].motion` defines speed magnitude and direction.
+- Risk labels are only hints; do not replace object-level motion with a different semantic scenario.
+
 Rules:
 
 - Generate Scenic code, not CARLA Python.

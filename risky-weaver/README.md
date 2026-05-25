@@ -1,6 +1,12 @@
 # Risky Weaver
 
-Minimal isolated action-primitive -> Scenic generation path using OpenCode.
+Minimal isolated low-level action-primitive -> Scenic generation path using OpenCode.
+
+The input primitive is intentionally bottom-level. Each object only needs:
+
+- `spawn`: where it starts.
+- `motion.start_frame` or `motion.start_time_s`: when it starts moving, defaulting to `0`.
+- `motion`: how it moves, mainly speed magnitude and direction.
 
 Run from repository root:
 

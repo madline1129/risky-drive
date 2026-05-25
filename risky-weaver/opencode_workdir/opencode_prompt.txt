@@ -1,14 +1,30 @@
-You are generating one Scenic scenario from one action primitive.
+You are generating one Scenic scenario from low-level action primitives.
 
 Inputs:
 - Read task JSON: /Users/madlineceleste/Desktop/code/ChatScene-main/risky-weaver/opencode_workdir/opencode_task.json
 - Edit exactly this file in place: /Users/madlineceleste/Desktop/code/ChatScene-main/risky-weaver/opencode_workdir/generated_scene.scenic
 
 Goal:
-- Convert task.action_primitive into executable Scenic code.
-- Keep the ego and primary_actor declarations from the seed file unless the task is weather_visibility_change.
-- Add only constants/behaviors/monitors/object behavior bindings needed for the primitive.
-- Make the action dangerous/aggressive when the primitive asks for intrusion, cut-in, braking, reversing, crossing, or weather degradation.
+- Convert task.low_level_objects into executable Scenic code.
+- Each object has exactly three authoritative parts:
+  1. spawn: where the object starts.
+  2. motion.start_frame or motion.start_time_s: when it starts moving. If omitted, treat it as 0.
+  3. motion: how it moves, especially speed magnitude and direction.
+- Keep all object declarations from the seed file. Add behavior bindings to those declarations when needed.
+- Do not invent semantic actions such as "cut_in" unless they are directly implied by the object's motion vector.
+- Make motion physically direct: if motion.frame is ego_local, convert longitudinal/lateral components into Scenic actions using the ego heading; if motion.frame is actor_local, use the actor heading; if motion.frame is world, use the given world heading/vector.
+
+Low-level motion contract:
+- motion.mode may be velocity, follow_lane, brake, reverse, walk, static, traffic_manager, or weather.
+- motion.start_frame is an integer frame. Default is 0. If only start_time_s is provided, task preparation converts it using scene_context.timestep.
+- motion.speed_mps is scalar speed.
+- motion.longitudinal_speed_mps and motion.lateral_speed_mps are signed components in motion.frame.
+- motion.direction may provide heading_deg, longitudinal_m, lateral_m, x_mps, y_mps, lateral_direction, or target_relative_lateral_m.
+- For vehicle velocity control, prefer repeated take SetVelocityAction(xVel, yVel, 0) after start_frame.
+- For hard brake, use repeated take SetThrottleAction(0), SetBrakeAction(1).
+- For reverse, use repeated take SetReverseAction(True), SetThrottleAction(...), SetBrakeAction(0).
+- For pedestrian motion, use SetWalkingDirectionAction and SetWalkingSpeedAction/SetWalkAction.
+- For static objects, do not attach behavior.
 
 Scenic API whitelist:
 - Time is exactly simulation().currentTime. Do not use current_time, current_frame, frame_id, or time_step.

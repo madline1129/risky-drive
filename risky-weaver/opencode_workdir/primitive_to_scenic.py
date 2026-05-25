@@ -100,6 +100,31 @@ def carla_to_scenic_heading(rotation: dict[str, Any] | None, fallback: str) -> s
     return f"{normalize_degrees(-(yaw_value + 90.0)):.3f} deg"
 
 
+def scenic_position_from_spawn(spawn: dict[str, Any] | None, fallback: str) -> str:
+    if not isinstance(spawn, dict):
+        return fallback
+    scenic_position = spawn.get("scenic_position") or spawn.get("position")
+    if isinstance(scenic_position, str) and "@" in scenic_position:
+        text = scenic_position.strip()
+        return text if text.startswith("(") else f"({text})"
+    carla_location = spawn.get("carla_location") or spawn.get("location")
+    return carla_to_scenic_position(carla_location, fallback)
+
+
+def scenic_heading_from_spawn(spawn: dict[str, Any] | None, fallback: str) -> str:
+    if not isinstance(spawn, dict):
+        return fallback
+    scenic_heading = spawn.get("scenic_heading") or spawn.get("heading")
+    if isinstance(scenic_heading, str):
+        return scenic_heading if "deg" in scenic_heading else f"{scenic_heading} deg"
+    if scenic_heading is not None:
+        value = as_float(scenic_heading)
+        if value is not None:
+            return f"{value:.3f} deg"
+    carla_rotation = spawn.get("carla_rotation") or spawn.get("rotation")
+    return carla_to_scenic_heading(carla_rotation, fallback)
+
+
 def actor_constructor(actor: dict[str, Any] | None) -> str:
     type_id = str((actor or {}).get("type_id") or "")
     kind = str((actor or {}).get("kind") or "").lower()
@@ -123,10 +148,16 @@ def find_primitive(data: dict[str, Any], primitive_name: str) -> dict[str, Any] 
 
 def scene_context(data: dict[str, Any]) -> dict[str, Any]:
     context = find_primitive(data, "set_scene_context") or {}
+    scene = data.get("scene") if isinstance(data.get("scene"), dict) else {}
     return {
-        "town": context.get("town") or data.get("town") or DEFAULT_TOWN,
-        "map_absolute_path": context.get("map_absolute_path") or data.get("map_absolute_path") or DEFAULT_MAP,
-        "weather": context.get("weather") or data.get("weather") or {},
+        "town": context.get("town") or scene.get("town") or data.get("town") or DEFAULT_TOWN,
+        "map_absolute_path": (
+            context.get("map_absolute_path")
+            or scene.get("map_absolute_path")
+            or data.get("map_absolute_path")
+            or DEFAULT_MAP
+        ),
+        "weather": context.get("weather") or scene.get("weather") or data.get("weather") or {},
     }
 
 
@@ -155,21 +186,116 @@ def action_primitive(data: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def actor_to_low_level_object(name: str, actor: dict[str, Any], motion: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "name": name,
+        "role": actor.get("role") or name,
+        "type_id": actor_blueprint(actor, "vehicle.lincoln.mkz_2017" if name == "ego" else "vehicle.tesla.model3"),
+        "kind": actor.get("kind"),
+        "spawn": {
+            "scenic_position": actor.get("scenic_position_expression"),
+            "scenic_heading": actor.get("scenic_heading"),
+            "carla_location": actor.get("location") or actor.get("carla_location"),
+            "carla_rotation": actor.get("rotation") or actor.get("carla_rotation"),
+        },
+        "motion": motion or {"start_frame": 0, "mode": "traffic_manager"},
+        "raw_actor": actor,
+    }
+
+
+def low_level_objects(data: dict[str, Any]) -> list[dict[str, Any]]:
+    objects = data.get("objects") or data.get("actors")
+    if isinstance(objects, list):
+        normalized = []
+        for index, item in enumerate(objects):
+            if not isinstance(item, dict):
+                continue
+            obj = dict(item)
+            obj.setdefault("name", f"actor_{index}")
+            obj.setdefault("spawn", {})
+            obj.setdefault("motion", {"start_frame": 0, "mode": "static"})
+            normalized.append(obj)
+        return normalized
+
+    ego = ego_actor(data)
+    primary = primary_actor(data)
+    action = action_primitive(data)
+    trigger_frame = data.get("trigger_frame") or action.get("trigger_frame") or 20
+    primary_motion = {
+        "start_frame": trigger_frame,
+        "mode": action.get("id") or "velocity",
+        "frame": action.get("motion_frame") or safe_get(action, "direction", "frame") or "ego_local",
+        "speed_mps": action.get("speed_mps"),
+        "lateral_speed_mps": action.get("lateral_speed_mps"),
+        "longitudinal_speed_mps": action.get("longitudinal_speed_mps"),
+        "target_relative_lateral_m": action.get("target_relative_lateral_m"),
+        "direction": action.get("direction"),
+        "raw_action": action,
+    }
+    result = []
+    if ego:
+        result.append(actor_to_low_level_object("ego", ego, {"start_frame": 0, "mode": "traffic_manager"}))
+    if primary and action.get("id") != "weather_visibility_change":
+        result.append(actor_to_low_level_object("primary_actor", primary, primary_motion))
+    return result
+
+
+def safe_get(data: dict[str, Any], *keys: str) -> Any:
+    current: Any = data
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def first_motion_frame(objects: list[dict[str, Any]], default: int = 0) -> int:
+    frames = []
+    for obj in objects:
+        motion = obj.get("motion") if isinstance(obj, dict) else None
+        if not isinstance(motion, dict):
+            continue
+        mode = str(motion.get("mode") or "").lower()
+        if mode in {"static", "traffic_manager", ""}:
+            continue
+        frame = as_float(motion.get("start_frame"), None)
+        if frame is not None:
+            frames.append(int(frame))
+    return min(frames) if frames else default
+
+
+def normalize_motion_times(objects: list[dict[str, Any]], timestep: float) -> None:
+    for obj in objects:
+        motion = obj.get("motion") if isinstance(obj, dict) else None
+        if not isinstance(motion, dict):
+            continue
+        if motion.get("start_frame") is None:
+            start_time = as_float(motion.get("start_time_s"), 0.0) or 0.0
+            motion["start_frame"] = int(round(start_time / timestep)) if timestep > 0 else 0
+
+
 def build_task(data: dict[str, Any]) -> dict[str, Any]:
     action = action_primitive(data)
+    objects = low_level_objects(data)
+    context = scene_context(data)
+    timestep = as_float(context.get("timestep"), as_float(safe_get(data, "scene", "timestep"), 0.05)) or 0.05
+    context["timestep"] = timestep
+    normalize_motion_times(objects, timestep)
+    trigger_frame = data.get("trigger_frame") or action.get("trigger_frame") or first_motion_frame(objects, 0)
     return {
         "level": "RiskyWeaverPrimitiveToScenicTask",
-        "scene_context": scene_context(data),
+        "scene_context": context,
         "risk": {
             "risk_family": data.get("risk_family"),
             "risk_type_id": data.get("risk_type_id"),
-            "scenario_type": data.get("scenario_type"),
-            "trigger_frame": data.get("trigger_frame") or action.get("trigger_frame") or 20,
+            "scenario_type": data.get("scenario_type") or safe_get(data, "risk_hint", "scenario_type"),
+            "trigger_frame": trigger_frame,
         },
         "actors": {
             "ego": ego_actor(data),
             "primary_actor": primary_actor(data),
         },
+        "low_level_objects": objects,
         "action_primitive": action,
         "raw_input": data,
     }
@@ -177,19 +303,7 @@ def build_task(data: dict[str, Any]) -> dict[str, Any]:
 
 def seed_scenic(task: dict[str, Any]) -> str:
     context = task["scene_context"]
-    ego = task["actors"].get("ego") or {}
-    primary = task["actors"].get("primary_actor") or {}
-    action = task.get("action_primitive") or {}
     trigger_frame = int(as_float(task["risk"].get("trigger_frame"), 20) or 20)
-
-    ego_pos = ego.get("scenic_position_expression") or carla_to_scenic_position(ego.get("location"), "(-184.000 @ -116.000)")
-    ego_heading = ego.get("scenic_heading") or carla_to_scenic_heading(ego.get("rotation"), "0 deg")
-    primary_pos = primary.get("scenic_position_expression") or carla_to_scenic_position(
-        primary.get("location"), "(-188.000 @ -108.000)"
-    )
-    primary_heading = primary.get("scenic_heading") or carla_to_scenic_heading(primary.get("rotation"), "0 deg")
-    primary_class = actor_constructor(primary)
-    primary_default_bp = "walker.pedestrian.0001" if primary_class == "Pedestrian" else "vehicle.tesla.model3"
 
     lines = [
         "'''Seed Scenic file. OpenCode must edit this file in place.'''",
@@ -199,21 +313,39 @@ def seed_scenic(task: dict[str, Any]) -> str:
         "model scenic.simulators.carla.model",
         "",
         f"TRIGGER_FRAME = {trigger_frame}",
-        "",
-        f"ego = Car at {ego_pos},",
-        f"    with heading {ego_heading},",
-        "    with regionContainedIn None,",
-        f'    with blueprint "{actor_blueprint(ego, "vehicle.lincoln.mkz_2017")}"',
     ]
 
-    if action.get("id") != "weather_visibility_change":
+    objects = task.get("low_level_objects") or []
+    if not objects:
+        objects = [
+            {
+                "name": "ego",
+                "type_id": "vehicle.lincoln.mkz_2017",
+                "spawn": {"scenic_position": "-184.000 @ -116.000", "scenic_heading": "0 deg"},
+                "motion": {"start_frame": 0, "mode": "traffic_manager"},
+            }
+        ]
+
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        name = re.sub(r"\W+", "_", str(obj.get("name") or "actor")).strip("_") or "actor"
+        spawn = obj.get("spawn") if isinstance(obj.get("spawn"), dict) else {}
+        actor = {
+            "type_id": obj.get("type_id") or obj.get("blueprint"),
+            "kind": obj.get("kind"),
+        }
+        constructor = actor_constructor(actor)
+        default_bp = "walker.pedestrian.0001" if constructor == "Pedestrian" else "vehicle.tesla.model3"
+        pos = scenic_position_from_spawn(spawn, "(-184.000 @ -116.000)" if name == "ego" else "(-188.000 @ -108.000)")
+        heading = scenic_heading_from_spawn(spawn, "0 deg")
         lines.extend(
             [
                 "",
-                f"primary_actor = {primary_class} at {primary_pos},",
-                f"    with heading {primary_heading},",
+                f"{name} = {constructor} at {pos},",
+                f"    with heading {heading},",
                 "    with regionContainedIn None,",
-                f'    with blueprint "{actor_blueprint(primary, primary_default_bp)}"',
+                f'    with blueprint "{obj.get("type_id") or obj.get("blueprint") or default_bp}"',
             ]
         )
 
@@ -246,17 +378,33 @@ def write_opencode_config(workdir: Path, base_url: str) -> None:
 
 
 def build_prompt(task_path: Path, output_path: Path) -> str:
-    return f"""You are generating one Scenic scenario from one action primitive.
+    return f"""You are generating one Scenic scenario from low-level action primitives.
 
 Inputs:
 - Read task JSON: {task_path}
 - Edit exactly this file in place: {output_path}
 
 Goal:
-- Convert task.action_primitive into executable Scenic code.
-- Keep the ego and primary_actor declarations from the seed file unless the task is weather_visibility_change.
-- Add only constants/behaviors/monitors/object behavior bindings needed for the primitive.
-- Make the action dangerous/aggressive when the primitive asks for intrusion, cut-in, braking, reversing, crossing, or weather degradation.
+- Convert task.low_level_objects into executable Scenic code.
+- Each object has exactly three authoritative parts:
+  1. spawn: where the object starts.
+  2. motion.start_frame or motion.start_time_s: when it starts moving. If omitted, treat it as 0.
+  3. motion: how it moves, especially speed magnitude and direction.
+- Keep all object declarations from the seed file. Add behavior bindings to those declarations when needed.
+- Do not invent semantic actions such as "cut_in" unless they are directly implied by the object's motion vector.
+- Make motion physically direct: if motion.frame is ego_local, convert longitudinal/lateral components into Scenic actions using the ego heading; if motion.frame is actor_local, use the actor heading; if motion.frame is world, use the given world heading/vector.
+
+Low-level motion contract:
+- motion.mode may be velocity, follow_lane, brake, reverse, walk, static, traffic_manager, or weather.
+- motion.start_frame is an integer frame. Default is 0. If only start_time_s is provided, task preparation converts it using scene_context.timestep.
+- motion.speed_mps is scalar speed.
+- motion.longitudinal_speed_mps and motion.lateral_speed_mps are signed components in motion.frame.
+- motion.direction may provide heading_deg, longitudinal_m, lateral_m, x_mps, y_mps, lateral_direction, or target_relative_lateral_m.
+- For vehicle velocity control, prefer repeated take SetVelocityAction(xVel, yVel, 0) after start_frame.
+- For hard brake, use repeated take SetThrottleAction(0), SetBrakeAction(1).
+- For reverse, use repeated take SetReverseAction(True), SetThrottleAction(...), SetBrakeAction(0).
+- For pedestrian motion, use SetWalkingDirectionAction and SetWalkingSpeedAction/SetWalkAction.
+- For static objects, do not attach behavior.
 
 Scenic API whitelist:
 - Time is exactly simulation().currentTime. Do not use current_time, current_frame, frame_id, or time_step.
