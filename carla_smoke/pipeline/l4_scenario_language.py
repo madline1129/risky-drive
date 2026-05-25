@@ -158,6 +158,38 @@ def generated_actor_with_pose(actor, ego):
     return generated
 
 
+def lateral_side(relative_lateral_m):
+    rel_lat = as_float(relative_lateral_m)
+    if rel_lat is None:
+        return None
+    if rel_lat < -0.05:
+        return "left"
+    if rel_lat > 0.05:
+        return "right"
+    return "center"
+
+
+def normalized_relative_position(relative_position, relative_longitudinal_m, relative_lateral_m):
+    side = lateral_side(relative_lateral_m)
+    if side not in {"left", "right"}:
+        return relative_position
+    rel_pos = str(relative_position or "").lower()
+    if "front" in rel_pos:
+        return f"front-{side}"
+    if "rear" in rel_pos or "behind" in rel_pos or "back" in rel_pos:
+        return f"rear-{side}"
+    if rel_pos in {"left", "right", "side", ""}:
+        rel_long = as_float(relative_longitudinal_m)
+        if rel_long is not None and rel_long > 0.5:
+            return f"front-{side}"
+        if rel_long is not None and rel_long < -0.5:
+            return f"rear-{side}"
+        return side
+    if "left" in rel_pos or "right" in rel_pos:
+        return side
+    return relative_position
+
+
 def relative_to_ego_summary(actor):
     rel_long = as_float(
         actor.get("relative_longitudinal_m", actor.get("initial_relative_longitudinal_m")),
@@ -170,15 +202,12 @@ def relative_to_ego_summary(actor):
     distance = as_float(actor.get("distance_m", actor.get("initial_distance_m")), None)
     if rel_long is None and rel_lat is None:
         return None
-    side = None
-    if rel_lat is not None:
-        if rel_lat < -0.05:
-            side = "left"
-        elif rel_lat > 0.05:
-            side = "right"
-        else:
-            side = "center"
-    relative_position = actor.get("relative_position") or actor.get("initial_relative_position")
+    side = lateral_side(rel_lat)
+    relative_position = normalized_relative_position(
+        actor.get("relative_position") or actor.get("initial_relative_position"),
+        rel_long,
+        rel_lat,
+    )
     summary = {
         "longitudinal_m": rel_long,
         "lateral_m": rel_lat,
@@ -211,11 +240,12 @@ def same_side_lateral_candidates(lateral_m):
     value = as_float(lateral_m)
     if value is None:
         return []
+    sign = -1.0 if value < 0 else 1.0
     base = max(0.5, abs(value))
     candidates = [base, base - 0.5, base + 0.5, base - 1.0, base + 1.0, base + 1.5]
     cleaned = []
     for candidate in candidates:
-        rounded = round(max(0.5, candidate), 3)
+        rounded = round(sign * max(0.5, candidate), 3)
         if rounded not in cleaned:
             cleaned.append(rounded)
     return cleaned
@@ -273,6 +303,11 @@ def actor_summary(actor):
     rel_lat = actor.get("relative_lateral_m", actor.get("initial_relative_lateral_m"))
     distance = actor.get("distance_m", actor.get("initial_distance_m"))
     relative = relative_to_ego_summary(actor)
+    relative_position = normalized_relative_position(
+        actor.get("relative_position") or actor.get("initial_relative_position"),
+        rel_long,
+        rel_lat,
+    )
     summary = {
         "source": actor.get("source"),
         "actor_id": actor.get("actor_id") or actor.get("id"),
@@ -283,7 +318,7 @@ def actor_summary(actor):
         "carla_rotation": rotation,
         "location": location,
         "rotation": rotation,
-        "relative_position": actor.get("relative_position") or actor.get("initial_relative_position"),
+        "relative_position": relative_position,
         "relative_longitudinal_m": rel_long,
         "relative_lateral_m": rel_lat,
         "distance_m": distance,
