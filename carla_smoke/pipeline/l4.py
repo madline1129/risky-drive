@@ -772,7 +772,20 @@ def validate_plan_spawn_parameters(config):
             }
         )
 
-    for field in skill.get("required_action_fields") or []:
+    required_fields = list(skill.get("required_action_fields") or [])
+    front_reverse_variant = (
+        primitive_id in {"front_vehicle_brake_after_trigger", "front_vehicle_slow_or_stop"}
+        and (
+            action_primitive.get("front_action_variant") == "reverse_toward_ego"
+            or action_primitive.get("reverse_speed_mps") is not None
+        )
+    )
+    if front_reverse_variant:
+        required_fields = [field for field in required_fields if field != "target_speed_mps"]
+        if "reverse_speed_mps" not in required_fields:
+            required_fields.append("reverse_speed_mps")
+
+    for field in required_fields:
         value = nested_value(action_primitive, field)
         checks.append(
             {
