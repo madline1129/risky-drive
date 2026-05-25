@@ -28,6 +28,16 @@
       "description": "Risk primarily caused by cargo or payload dropping, sliding, or flying into ego's path."
     },
     {
+      "id": "rare_composite_risk",
+      "name": "Rare composite risk",
+      "description": "Low-frequency multi-actor risk, such as a lead vehicle turning away and revealing a pedestrian in ego's path."
+    },
+    {
+      "id": "weather_visibility_risk",
+      "name": "Weather and visibility risk",
+      "description": "Risk primarily caused by sudden weather, illumination, or visibility degradation."
+    },
+    {
       "id": "ego_action_risk",
       "name": "Ego action risk",
       "description": "Risk primarily caused by ego continuing, reacting late, or braking insufficiently around a hazard."
@@ -145,6 +155,46 @@
       "keywords": ["制动不足", "刹车不足", "反应不及", "距离不足"],
       "match": {"hazard_relative_positions": ["front", "front-left", "front-right"], "max_longitudinal_m": 25.0},
       "acceptance": {"ego_speed_near_trigger_min": 0.5, "distance_to_hazard_decrease_min": 0.5}
+    },
+    {
+      "id": "lead_turn_reveals_vru",
+      "family": "rare_composite_risk",
+      "legacy_scenario_type": "vulnerable_actor_intrusion",
+      "primary_action_primitive_id": "vru_emerge_from_occlusion_into_path",
+      "actor_kinds": ["pedestrian", "walker", "cyclist"],
+      "keywords": ["前车", "左转", "遮挡", "行人", "暴露", "出现", "复合", "罕见"],
+      "match": {"relative_positions": ["front-left", "front-right", "left", "right", "front"], "max_longitudinal_m": 25.0},
+      "acceptance": {"actor_motion_m_min": 1.0, "min_distance_to_ego_m_max": 8.0}
+    },
+    {
+      "id": "rare_side_vehicle_unexpected_intrusion",
+      "family": "rare_composite_risk",
+      "legacy_scenario_type": "side_vehicle_intrusion",
+      "primary_action_primitive_id": "side_vehicle_cut_in_to_ego_lane",
+      "actor_kinds": ["vehicle"],
+      "keywords": ["侧方", "横向", "掉头", "逆行", "非典型", "侵入", "罕见"],
+      "match": {"relative_positions": ["front-left", "front-right", "left", "right"], "max_abs_lateral_m": 7.0},
+      "acceptance": {"relative_lateral_delta_m_min": 1.2, "min_abs_relative_lateral_m_max": 2.2}
+    },
+    {
+      "id": "rare_object_unexpected_intrusion",
+      "family": "rare_composite_risk",
+      "legacy_scenario_type": "road_obstacle_intrusion",
+      "primary_action_primitive_id": "static_obstacle_blocking_path",
+      "actor_kinds": ["obstacle", "static", "payload", "object", "vehicle"],
+      "keywords": ["异物", "障碍", "货物", "掉落", "散落", "非典型", "罕见"],
+      "match": {"relative_positions": ["front", "front-left", "front-right"], "max_longitudinal_m": 25.0},
+      "acceptance": {"min_obstacle_distance_to_ego_m_max": 12.0}
+    },
+    {
+      "id": "sudden_night_visibility_loss",
+      "family": "weather_visibility_risk",
+      "legacy_scenario_type": "weather_visibility_change",
+      "primary_action_primitive_id": "weather_shift_to_night",
+      "actor_kinds": ["ego"],
+      "keywords": ["天气", "黑夜", "夜间", "光照", "可见度", "视距", "突然变暗"],
+      "match": {},
+      "acceptance": {"sun_altitude_angle_max": -10.0, "visibility_degraded": true}
     }
   ],
   "action_primitives": [
@@ -249,6 +299,16 @@
       "direction_policy": "follow_lane_toward_hazard",
       "stop_condition": "late_brake_or_timeout",
       "acceptance_checks": ["ego_moving_near_trigger", "distance_to_hazard_decreases"]
+    },
+    {
+      "id": "weather_shift_to_night",
+      "controlled_actor_role": "environment",
+      "motion_frame": "world",
+      "trigger_frame": 40,
+      "weather": {"sun_altitude_angle": -25.0, "cloudiness": 80.0, "fog_density": 20.0},
+      "direction": {"frame": "world", "longitudinal_mps": 0.0, "lateral_mps": 0.0, "heading_delta_deg": 0.0},
+      "stop_condition": "timeout",
+      "acceptance_checks": ["weather_visibility_changed"]
     },
     {
       "id": "vehicle_maintain_current_speed",

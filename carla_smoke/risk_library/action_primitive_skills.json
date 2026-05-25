@@ -222,6 +222,18 @@
       "parameter_rules": ["Ego is already spawned by L0; use hazard actor as primary object when scenario_type is ego_action_risk."]
     },
     {
+      "id": "weather_shift_to_night",
+      "actor_role": "environment",
+      "primary_actor_kinds": ["environment"],
+      "spawn_semantics": {},
+      "required_action_fields": ["trigger_frame", "weather.sun_altitude_angle"],
+      "parameter_rules": [
+        "This primitive changes environment visibility, not an actor spawn.",
+        "Use sun_altitude_angle <= -10.0 for night.",
+        "Do not invent a physical primary actor for this primitive; primary_object may be an environment placeholder."
+      ]
+    },
+    {
       "id": "vehicle_maintain_current_speed",
       "actor_role": "vehicle",
       "primary_actor_kinds": ["vehicle"],

@@ -397,16 +397,17 @@ def build_semantic_primitives(config, l0_state=None):
             )
         )
 
-    primitives.append(
-        primitive(
-            "spawn_actor_relative",
-            role="primary_risk_actor",
-            actor=primary_actor,
-            relative_to="ego",
-            preserve_relative_geometry=True,
-            absolute_pose_is_hint_only=True,
+    if scenario_type != "weather_visibility_change":
+        primitives.append(
+            primitive(
+                "spawn_actor_relative",
+                role="primary_risk_actor",
+                actor=primary_actor,
+                relative_to="ego",
+                preserve_relative_geometry=True,
+                absolute_pose_is_hint_only=True,
+            )
         )
-    )
 
     if scenario_type == "front_vehicle_brake":
         primitives.extend(
@@ -493,6 +494,20 @@ def build_semantic_primitives(config, l0_state=None):
                     preserve_hazard_actor=True,
                 ),
                 primitive("record_expectation", expectation="ego continues toward an existing hazard instead of braking or avoiding"),
+            ]
+        )
+    elif scenario_type == "weather_visibility_change":
+        primitives.extend(
+            [
+                primitive("follow_lane", actor="ego", until_frame=trigger_frame),
+                primitive(
+                    "weather_visibility_change",
+                    actor="environment",
+                    trigger_frame=trigger_frame,
+                    action=action,
+                    target_weather=action.get("weather"),
+                ),
+                primitive("record_expectation", expectation="environment visibility degrades to night conditions while ego keeps moving"),
             ]
         )
     else:
@@ -588,6 +603,7 @@ def prepare_workspace(args, task_source_path, primitives_path, spawn_scenic_path
             "generated_risk_scene.scenic starts from a CARLA-validated spawn_check.scenic whenever available; preserve the existing ego/primary_actor spawn lines.\n"
             "The file must use the absolute map path from l4_task.scene_context.map_absolute_path.\n"
             "Use precomputed Scenic 2D coordinates from l4_task; never copy raw CARLA y/yaw directly.\n"
+            "Never write tolerance shorthand like `12.352 +/- 1.0`; use Scenic `Range(11.352, 13.352)`.\n"
             "When absolute placement fails, preserve actor.relative_to_ego.side and use same_side_search_policy.\n"
             "Write event behavior so semantic_validation in event_trace.json can pass after execution.\n"
             "The file must be executable by Scenic/CARLA.\n"
@@ -696,10 +712,13 @@ Requirements:
 - Follow l4_task.actions.action_primitive as the hard action primitive.
 - Use l4_task.scene_context.map_absolute_path exactly in `param map = localPath(...)`.
 - Use the precomputed `actor.scenic_position_expression` and `actor.scenic_heading` from l4_task; never convert raw CARLA x/y/yaw yourself.
+- Never write tolerance shorthand like `12.352 +/- 1.0`; Scenic ranges must be written as `Range(11.352, 13.352)`.
+- In `following roadDirection from ego for ...`, use a numeric literal or `Range(lower, upper)`, never `a +/- b`.
 - Prefer `actor.relative_to_ego` for L0 actors. If exact placement fails, use `same_side_search_policy` and keep the original left/right side.
 - Do not over-constrain Scenic placement around one absolute point. Absolute L0 poses are hints; ego-relative same-side geometry is the acceptance target.
 - Preserve l4_task.risk.scenario_type exactly.
 - Preserve primary actor kind/type, ego-relative geometry, concrete action primitive, numeric direction, speed, brake intensity, and trigger timing.
+- For weather_visibility_change, implement the environment/weather action directly; do not invent a physical primary actor.
 - L0 absolute coordinates are hints; relative geometry is authoritative.
 - The generated Scenic must run through carla_smoke/scenes/safebench_scenic_scene.py.
 - Do not write Markdown. Do not ask questions. Edit only generated_risk_scene.scenic.
@@ -726,6 +745,8 @@ Repair the Scenic file in place.
 - Fix the concrete issue described in Repair feedback.
 - Keep `param map = localPath(...)` on the absolute map path from l4_task.json.
 - Replace any `Point(x, y, z)` / CARLA Python coordinate syntax with Scenic 2D `x @ y` syntax.
+- Replace any tolerance shorthand like `12.352 +/- 1.0` with Scenic `Range(11.352, 13.352)`.
+- In `following roadDirection from ego for ...`, use a numeric literal or `Range(lower, upper)`, never `a +/- b`.
 - Do not flip actor.relative_to_ego.side. If a left-side actor does not fit, search only left-side distances; if a right-side actor does not fit, search only right-side distances.
 - If exact absolute placement fails or Scenic cannot sample the scene, stop hard-coding the failed absolute point. Use ego-relative placement and same-side nearby search while preserving actor type, side, and front/rear relation.
 - If this is a semantic validation failure, use the failed checks in Repair feedback as the repair target. Each failed check includes target, actual, and reason; edit the Scenic scenario so those checks pass.
@@ -815,6 +836,8 @@ def build_execution_repair_feedback(error_output):
                 "issue": "Generated Scenic code has a syntax error.",
                 "repair_requirements": [
                     "Fix Scenic syntax in generated_risk_scene.scenic.",
+                    "Replace tolerance shorthand like `12.352 +/- 1.0` with Scenic `Range(11.352, 13.352)`.",
+                    "In `following roadDirection from ego for ...`, use a numeric literal or `Range(lower, upper)`, never `a +/- b`.",
                     "Avoid unsupported constructs such as timed `take ... for ... seconds` if Scenic rejects them.",
                     "Use valid Scenic behavior syntax for actions over time.",
                 ],
@@ -1059,6 +1082,7 @@ def write_event_trace_from_states(images_dir, config, primitives):
             "frame": infer_saved_frame(path, state),
             "ego_speed_mps": ego.get("speed_mps"),
             "ego_location": ego.get("location"),
+            "weather": state.get("weather"),
             "actor_count": len(state.get("actors") or []),
             "image_file": safe_get(state, "source", "image_file")
             or os.path.basename(path).replace("state_", "rgb_").replace(".json", ".png"),
@@ -1462,11 +1486,13 @@ def write_spawn_check_scenic(config, primitives, path):
     )
     primary = primitives.get("primary_actor") or {}
     ego_pos, ego_heading = require_spawn_pose(ego, "ego")
-    primary_pos, primary_heading = require_spawn_pose(primary, "primary_actor")
     town = context.get("town") or "Town05"
     map_path = context.get("map_absolute_path") or scenic_map_absolute_path(town)
-    primary_class = scenic_actor_class(primary)
-    primary_blueprint = scenic_actor_blueprint(primary, "vehicle.nissan.micra")
+    primary_is_environment = str(primary.get("kind") or "").lower() == "environment"
+    if not primary_is_environment:
+        primary_pos, primary_heading = require_spawn_pose(primary, "primary_actor")
+        primary_class = scenic_actor_class(primary)
+        primary_blueprint = scenic_actor_blueprint(primary, "vehicle.nissan.micra")
     ego_blueprint = scenic_actor_blueprint(ego, "vehicle.lincoln.mkz_2017")
     lines = [
         "'''Spawn-only validation generated before OpenCode codegen.'''",
@@ -1481,12 +1507,24 @@ def write_spawn_check_scenic(config, primitives, path):
         "    with regionContainedIn None,",
         "    with blueprint EGO_MODEL",
         "",
-        f"primary_actor = {primary_class} at {primary_pos},",
-        f"    with heading {primary_heading},",
-        "    with regionContainedIn None,",
-        f"    with blueprint {json.dumps(primary_blueprint)}",
-        "",
     ]
+    if primary_is_environment:
+        lines.extend(
+            [
+                "# No primary_actor spawn is needed for weather_visibility_change.",
+                "",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                f"primary_actor = {primary_class} at {primary_pos},",
+                f"    with heading {primary_heading},",
+                "    with regionContainedIn None,",
+                f"    with blueprint {json.dumps(primary_blueprint)}",
+                "",
+            ]
+        )
     write_text(path, "\n".join(lines))
 
 

@@ -10,6 +10,9 @@ from deepseek_client import DEFAULT_API_KEY_ENV, DEFAULT_DEEPSEEK_MODEL, DEFAULT
 from risk_library import risk_type_by_id
 
 
+L3_CHAIN_LIMIT = 4
+
+
 PROMPT_TEMPLATE = """你是自动驾驶风险推演系统中的 L3 子智能体。
 输入是 L2 触发事件假设 JSON，以及可选的精简单帧 L0 场景快照。
 
@@ -67,7 +70,7 @@ L3 初始事故链：
 }
 
 硬性要求：
-- initial_accident_chains 最多 10 项，优先覆盖输入中的前 10 个 L2。
+- initial_accident_chains 最多 4 项，优先覆盖输入中的前 4 个 L2。
 - 每项必须包含 chain_description、direct_physical_outcome、action_primitives、chain_participants。
 - 每项必须继承 risk_family、risk_type_id，并根据 risk_type_id 写出 primary_trigger_action_id；participant_actions 可以跨 family 引用动作，但必须服务于主事故链。
 - action_primitives 必须覆盖 chain_participants 中每一个 actor_role/actor_ref；不要只写主触发动作。
@@ -168,6 +171,8 @@ def actor_role_for_primary_action(action_id):
         return "payload"
     if action_id.startswith("ego"):
         return "ego"
+    if action_id.startswith("weather"):
+        return "environment"
     return "primary_actor"
 
 
@@ -301,6 +306,8 @@ def default_action_for_participant(participant, chain):
 
     if participant_is_primary(participant) or actor_role == primary_role:
         return primary_action, "primary", "主触发物体执行主动作原语"
+    if actor_role == "environment":
+        return "weather_shift_to_night", "primary", "环境光照/可见度执行天气扰动动作原语"
     if actor_role == "ego":
         return "ego_continue_without_braking", "accompanying", "自车维持当前速度沿原车道继续运动"
     if is_vehicle_role(actor_role):
@@ -463,10 +470,10 @@ def sanitize_action_primitives(primitives):
 def normalize_output(parsed, l2_data, source_l2_file, l0_data=None):
     chains = parsed.get("initial_accident_chains", []) if isinstance(parsed, dict) else []
     normalized = []
-    events = trigger_events_from_data(l2_data)[:10]
+    events = trigger_events_from_data(l2_data)[:L3_CHAIN_LIMIT]
     events_by_id = event_by_l2_id(events)
     if isinstance(chains, list):
-        for idx, chain in enumerate(chains[:10], start=1):
+        for idx, chain in enumerate(chains[:L3_CHAIN_LIMIT], start=1):
             if not isinstance(chain, dict):
                 chain = {"chain_description": str(chain)}
             chain.setdefault("level", "L3")
@@ -483,13 +490,13 @@ def normalize_output(parsed, l2_data, source_l2_file, l0_data=None):
         "name": "初始事故链",
         "description": "触发事件导致的直接物理后果",
         "source_l2_file": os.path.abspath(source_l2_file),
-        "initial_accident_chains": normalized[:10],
+        "initial_accident_chains": normalized[:L3_CHAIN_LIMIT],
     }
 
 
 def fallback_chains_from_l2(l2_data):
     chains = []
-    for idx, event in enumerate(trigger_events_from_data(l2_data)[:10], start=1):
+    for idx, event in enumerate(trigger_events_from_data(l2_data)[:L3_CHAIN_LIMIT], start=1):
         if not isinstance(event, dict):
             continue
         chains.append(

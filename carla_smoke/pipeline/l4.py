@@ -40,7 +40,8 @@ PLAN_AGENT_PROMPT_TEMPLATE = """你是 L4 PlanAgent。
 - 如果没有 L0 actor 满足出生位置语义，必须使用 primary_object.source="generated_object"，并直接给出 kind、type_id、relative_position、relative_longitudinal_m、relative_lateral_m；不要硬选一个不合语义的 L0 actor。
 - action_primitive.direction.longitudinal_m / lateral_m 必须和 primary_object 的 relative_longitudinal_m / relative_lateral_m 一致。
 - 对 vru_cross_lateral_into_path 这类“进入自车前方车道”的动作，主对象不能在自车后方；relative_longitudinal_m 必须为正且满足 skill 范围。
-- scenario_type 只能是：front_vehicle_brake, cargo_drop, vulnerable_actor_intrusion, road_obstacle_intrusion, side_vehicle_intrusion, ego_action_risk。
+- 对 weather_shift_to_night / weather_visibility_change，不要选择或生成物理 primary actor；primary_object 使用 kind="environment" 的占位对象即可。
+- scenario_type 只能是：front_vehicle_brake, cargo_drop, vulnerable_actor_intrusion, road_obstacle_intrusion, side_vehicle_intrusion, ego_action_risk, weather_visibility_change。
 - 只输出 JSON，不要 Markdown。
 
 输出格式：
@@ -54,7 +55,7 @@ PLAN_AGENT_PROMPT_TEMPLATE = """你是 L4 PlanAgent。
   "primary_object": {
     "source": "l0_actor/generated_object",
     "actor_id": 123,
-    "kind": "vehicle/pedestrian/obstacle/payload",
+    "kind": "vehicle/pedestrian/obstacle/payload/environment",
     "role": "front_vehicle",
     "type_id": "vehicle.nissan.micra",
     "relative_position": "front/front-left/front-right/left/right",
@@ -427,8 +428,11 @@ def default_success_criteria(scenario_type, plan_output):
         criteria.setdefault("ego_speed_near_trigger_min", 1.0)
         criteria.setdefault("distance_to_hazard_decrease_min", 0.5)
         criteria.setdefault("min_distance_to_hazard_m_max", 4.0)
+    elif scenario_type == "weather_visibility_change":
+        criteria.setdefault("sun_altitude_angle_max", -10.0)
+        criteria.setdefault("visibility_degraded", True)
     criteria.setdefault("must_match_scenario_type", scenario_type)
-    criteria.setdefault("must_use_primary_actor_from_config", True)
+    criteria.setdefault("must_use_primary_actor_from_config", scenario_type != "weather_visibility_change")
     return criteria
 
 
@@ -444,6 +448,8 @@ def event_contract(scenario_type, success_criteria):
         fields.extend(["primary_actor_position", "distance_to_ego_m"])
     elif scenario_type == "ego_action_risk":
         fields.extend(["primary_actor_position", "distance_to_ego_m", "relative_longitudinal_m"])
+    elif scenario_type == "weather_visibility_change":
+        fields.extend(["weather"])
     return {
         "trace_file": "event_trace.json",
         "required_top_level_fields": ["scenario_type", "trigger_frame", "frames", "event_applied"],

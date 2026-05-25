@@ -10,6 +10,11 @@ from deepseek_client import DEFAULT_API_KEY_ENV, DEFAULT_DEEPSEEK_MODEL, DEFAULT
 from risk_library import risk_types_for_family
 
 
+L1_NODE_COUNT = 4
+L2_EVENTS_PER_L1 = 1
+L2_EVENT_COUNT = L1_NODE_COUNT * L2_EVENTS_PER_L1
+
+
 PROMPT_TEMPLATE = """你是自动驾驶风险推演系统中的 L2 子智能体。
 你的输入不是图像，而是上一步 L1 生成的风险薄弱环节 JSON，可能还包含精简的单帧 L0 场景快照。
 
@@ -21,12 +26,12 @@ L2 触发事件假设：
 - L2 只描述具体触发事件，不展开事故链，不写 CARLA 执行方案，不指定掉落物/轨迹/脚本参数；这些属于 L3/L4。
 - L0 是单帧输入，不能声称有多帧趋势；如果触发事件需要后续确认，observability 写“需要仿真状态确认”。
 - L2 不选择主风险对象，不输出完整 actor，不输出动作原语；L2 只负责给 L1 的风险家族和薄弱点补一个具体触发事件。
-- 平均每个 L1 给出 2 个触发事件。
-- 如果 L1 有 5 个风险，则总共输出 10 个 L2 触发事件。
+- 每个 L1 只给出 1 个最代表性的触发事件。
+- 如果 L1 有 4 个风险，则总共输出 4 个 L2 触发事件。
 
 示例：
-- 对 L1「货物固定不稳」：a. 绳索断裂；b. 货物未被固定。
-- 对 L1「骑行者靠近机动车道」：a. 骑行者突然滑倒；b. 骑行者为避让坑洼突然转向。
+- 对 L1「货物固定不稳」：选择“绳索断裂”这一类最代表性的触发事件。
+- 对 L1「骑行者靠近机动车道」：选择“骑行者突然滑倒/突然转向”中最能激活当前风险的一项。
 
 请只输出一个 JSON 对象，不要 Markdown，不要解释性前后缀。格式必须是：
 {
@@ -55,8 +60,10 @@ L2 触发事件假设：
 }
 
 硬性要求：
-- trigger_event_hypotheses 必须正好 10 项。
-- 每个 L1 风险默认生成 2 个 L2 触发事件，id 形如 L2-1a、L2-1b、L2-2a、L2-2b。
+- trigger_event_hypotheses 必须正好 4 项。
+- 每个 L1 风险只生成 1 个 L2 触发事件，id 形如 L2-1a、L2-2a、L2-3a、L2-4a。
+- 对 risk_family=rare_composite_risk，必须根据 L1 的 name/evidence/weakness_reason 继续细化一个不常见但可实现的触发事件；“前车突然左转后暴露行人”只是例子，不要固定复用。
+- 对 risk_family=weather_visibility_risk，触发事件应围绕“环境突然变成黑夜或可见度显著下降”。
 - 不要重新识别图像；只能基于输入 JSON 做推演。
 - 必须继承 L1 的 risk_family，并且 risk_type_id 只能来自输入的 risk_type_options_by_family[risk_family]。
 - 不要输出 primary_trigger_action_id、primary_action_primitive_id、action_primitive、risk_library_candidate、legacy_scenario_type、actor_list、selected_actor、primary_perturbation_object、matched_actor_id。
@@ -118,25 +125,40 @@ def l1_risks_from_data(l1_data):
 
 def fallback_events_for_risk(risk, rank):
     name = risk.get("name", "待确认风险薄弱环节") if isinstance(risk, dict) else str(risk)
-    if "货物" in name or "固定" in name:
-        pairs = [("绳索断裂", "货物约束突然失效"), ("货物未被固定", "车辆运动导致货物开始滑移")]
+    family = risk.get("risk_family") if isinstance(risk, dict) else None
+    if family == "rare_composite_risk":
+        text = " ".join(
+            str((risk or {}).get(key, ""))
+            for key in ("name", "evidence", "weakness_reason")
+            if isinstance(risk, dict)
+        )
+        if any(token in text for token in ("货物", "异物", "障碍", "掉落", "散落")):
+            pairs = [("非典型异物突然进入自车前方路径", "自车前方可通行空间被异常物体压缩")]
+        elif any(token in text for token in ("侧", "变道", "横向", "掉头", "逆行")):
+            pairs = [("侧方车辆发生非典型横向侵入", "侧方车辆突然进入或逼近自车车道")]
+        else:
+            pairs = [("遮挡关系突变后暴露近距离风险对象", "原本不显著的风险对象突然进入自车可冲突区域")]
+    elif family == "weather_visibility_risk":
+        pairs = [("环境光照突然降低至黑夜", "自车可见距离和目标识别余量显著下降")]
+    elif "货物" in name or "固定" in name:
+        pairs = [("绳索断裂", "货物约束突然失效")]
     elif "刹车灯" in name:
-        pairs = [("前车减速但刹车灯不亮", "后车无法及时获得视觉提示"), ("刹车灯延迟亮起", "后车对减速时机判断滞后")]
+        pairs = [("前车减速但刹车灯不亮", "后车无法及时获得视觉提示")]
     elif "骑行" in name or "自行车" in name:
-        pairs = [("骑行者突然滑倒", "骑行者横向侵入机动车道"), ("骑行者避让坑洼突然转向", "骑行者轨迹发生突变")]
+        pairs = [("骑行者突然滑倒", "骑行者横向侵入机动车道")]
     elif "湿滑" in name or "路面" in name:
-        pairs = [("车辆制动时轮胎打滑", "制动距离突然变长"), ("前方积水导致附着力下降", "车辆横向稳定性降低")]
+        pairs = [("车辆制动时轮胎打滑", "制动距离突然变长")]
     elif "A柱" in name or "盲区" in name:
-        pairs = [("目标从A柱遮挡区出现", "自车感知目标时间被压缩"), ("自车转向时盲区扩大", "侧前方目标短时不可见")]
+        pairs = [("目标从A柱遮挡区出现", "自车感知目标时间被压缩")]
     elif "遮挡" in name or "大型车辆" in name:
-        pairs = [("被遮挡车辆突然出现", "前方可通行空间骤减"), ("大型车辆突然变道", "遮挡解除后暴露近距离目标")]
+        pairs = [("被遮挡车辆突然出现", "前方可通行空间骤减")]
     elif "跟车" in name or "距离" in name or ("前车" in name and "速度" in name):
-        pairs = [("前车突然急刹", "自车剩余制动距离不足"), ("前车低速停滞", "自车需要紧急减速或变道")]
+        pairs = [("前车突然急刹", "自车剩余制动距离不足")]
     else:
-        pairs = [("目标运动状态突变", "当前薄弱环节被激活"), ("自车可用反应时间缩短", "避让或制动空间被压缩")]
+        pairs = [("目标运动状态突变", "当前薄弱环节被激活")]
 
     events = []
-    for suffix, (trigger_name, outcome) in zip(["a", "b"], pairs):
+    for suffix, (trigger_name, outcome) in zip(["a"], pairs):
         events.append(
             {
                 "level": "L2",
@@ -157,7 +179,7 @@ def fallback_events_for_risk(risk, rank):
 
 
 def risk_by_rank(l1_data):
-    risks = l1_risks_from_data(l1_data)[:5]
+    risks = l1_risks_from_data(l1_data)[:L1_NODE_COUNT]
     mapping = {}
     for idx, risk in enumerate(risks, start=1):
         if not isinstance(risk, dict):
@@ -241,12 +263,25 @@ def normalize_output(parsed, l1_data, source_l1_file):
     normalized = []
     risks_by_rank = risk_by_rank(l1_data)
     if isinstance(events, list):
-        for idx, event in enumerate(events[:10], start=1):
+        by_rank = {}
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            try:
+                rank = int(event.get("parent_l1_rank"))
+            except (TypeError, ValueError):
+                rank = None
+            if rank is not None and 1 <= rank <= L1_NODE_COUNT and rank not in by_rank:
+                by_rank[rank] = event
+        ordered = [by_rank.get(rank) for rank in range(1, L1_NODE_COUNT + 1) if by_rank.get(rank)]
+        if not ordered:
+            ordered = events[:L2_EVENT_COUNT]
+        for idx, event in enumerate(ordered[:L2_EVENT_COUNT], start=1):
             if not isinstance(event, dict):
                 event = {"trigger_name": str(event)}
             event.setdefault("level", "L2")
-            event.setdefault("id", f"L2-{((idx - 1) // 2) + 1}{'a' if idx % 2 == 1 else 'b'}")
-            event.setdefault("parent_l1_rank", ((idx - 1) // 2) + 1)
+            event.setdefault("id", f"L2-{idx}a")
+            event.setdefault("parent_l1_rank", idx)
             event.setdefault("parent_l1_name", "unknown")
             if "immediate_effect" not in event and "direct_physical_outcome" in event:
                 event["immediate_effect"] = event.pop("direct_physical_outcome")
@@ -254,15 +289,37 @@ def normalize_output(parsed, l1_data, source_l1_file):
             inherit_actor_context(event, risk_for_event(risks_by_rank, event))
             normalized.append(strip_l2_event(event))
 
-    if len(normalized) != 10:
-        raise ValueError(f"L2 LLM output must contain exactly 10 trigger events, got {len(normalized)}")
+    if len(normalized) < L2_EVENT_COUNT:
+        fallback_events = []
+        for rank in range(1, L1_NODE_COUNT + 1):
+            risk = risks_by_rank.get(rank)
+            if risk:
+                fallback_events.extend(fallback_events_for_risk(risk, rank))
+        existing_ranks = {event.get("parent_l1_rank") for event in normalized if isinstance(event, dict)}
+        for event in fallback_events:
+            if len(normalized) >= L2_EVENT_COUNT:
+                break
+            if event.get("parent_l1_rank") in existing_ranks:
+                continue
+            inherit_actor_context(event, risk_for_event(risks_by_rank, event))
+            normalized.append(strip_l2_event(event))
 
-    normalized = normalized[:10]
+    if len(normalized) != L2_EVENT_COUNT:
+        raise ValueError(f"L2 output must contain exactly {L2_EVENT_COUNT} trigger events, got {len(normalized)}")
+
+    def event_rank(item):
+        try:
+            return int((item or {}).get("parent_l1_rank"))
+        except (TypeError, ValueError):
+            return 999
+
+    normalized = sorted(normalized[:L2_EVENT_COUNT], key=event_rank)
     for idx, event in enumerate(normalized, start=1):
-        rank = ((idx - 1) // 2) + 1
-        suffix = "a" if idx % 2 == 1 else "b"
-        event["id"] = f"L2-{rank}{suffix}"
-        event.setdefault("parent_l1_rank", rank)
+        rank = event_rank(event)
+        if rank == 999:
+            rank = idx
+        event["id"] = f"L2-{rank}a"
+        event["parent_l1_rank"] = rank
         event.setdefault("boundary", "L2只定义触发事件，L3再展开物理演化")
         inherit_actor_context(event, risk_for_event(risks_by_rank, event))
         normalized[idx - 1] = strip_l2_event(event)
@@ -278,9 +335,9 @@ def normalize_output(parsed, l1_data, source_l1_file):
 
 def fallback_output(l1_data, source_l1_file):
     events = []
-    for rank, risk in enumerate(l1_risks_from_data(l1_data)[:5], start=1):
+    for rank, risk in enumerate(l1_risks_from_data(l1_data)[:L1_NODE_COUNT], start=1):
         events.extend(fallback_events_for_risk(risk, rank))
-    return normalize_output({"trigger_event_hypotheses": events[:10]}, l1_data, source_l1_file)
+    return normalize_output({"trigger_event_hypotheses": events[:L2_EVENT_COUNT]}, l1_data, source_l1_file)
 
 
 def main():

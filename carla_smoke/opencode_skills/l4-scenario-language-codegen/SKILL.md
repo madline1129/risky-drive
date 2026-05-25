@@ -15,6 +15,8 @@ Generate `generated_risk_scene.scenic` for the ChatScene L4 backend.
 - Use `l4_task.scene_context.map_absolute_path` exactly in `param map = localPath(...)`.
 - Use Scenic 2D coordinates: `(x @ y)`. Never emit `Point(x, y, z)`, `carla.Location`, or `carla.Transform`.
 - CARLA to Scenic conversion is already provided: Scenic x = CARLA x, Scenic y = -CARLA y, Scenic heading = `-(CARLA yaw + 90)`.
+- Never use tolerance shorthand like `12.352 +/- 1.0`; Scenic does not support that syntax. Use `Range(11.352, 13.352)` instead.
+- In `following roadDirection from ego for ...`, the distance must be a numeric literal or `Range(lower, upper)`, for example `following roadDirection from ego for Range(11.352, 13.352)`.
 - Preserve `l4_task.risk.scenario_type`, primary actor kind/type, ego-relative side, trigger frame, and every numeric field in `l4_task.actions.action_primitive`.
 - If exact absolute placement fails, adjust only within `actor.relative_to_ego.same_side_search_policy`; never flip left/right.
 - L0 absolute pose is a hint. Ego-relative geometry and the requested risk action are authoritative.
