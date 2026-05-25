@@ -7,7 +7,7 @@ import os
 import sys
 
 from deepseek_client import DEFAULT_API_KEY_ENV, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_URL, DeepSeekError, chat_json, get_api_key, parse_json_response
-from risk_library import risk_types_for_family
+from risk_library import risk_type_by_id, risk_types_for_family
 
 
 L1_NODE_COUNT = 4
@@ -211,6 +211,13 @@ def inherit_actor_context(event, risk):
         event["risk_family"] = risk["risk_family"]
     if not event.get("risk_type_id"):
         event["risk_type_id"] = choose_risk_type_id(event, risk)
+    risk_type = risk_type_by_id(event.get("risk_type_id")) or {}
+    if any(
+        token in " ".join(str(event.get(key, "")) for key in ("trigger_name", "counterfactual_intervention", "mechanism", "immediate_effect"))
+        for token in ("行人", "pedestrian", "walker", "骑行", "自行车", "cyclist", "vru")
+    ) and not any(kind in risk_type.get("actor_kinds", []) for kind in ("pedestrian", "walker", "cyclist")):
+        event["risk_family"] = "vru_risk"
+        event["risk_type_id"] = choose_risk_type_id(event, {"risk_family": "vru_risk"})
     return event
 
 
@@ -230,6 +237,15 @@ def choose_risk_type_id(event, risk):
         ]
         if value
     )
+    if any(token in text for token in ("行人", "pedestrian", "walker", "骑行", "自行车", "cyclist", "vru")):
+        vru_options = [item for item in options if any(kind in item.get("actor_kinds", []) for kind in ("pedestrian", "walker", "cyclist"))]
+        if vru_options:
+            options = vru_options
+        else:
+            global_vru_options = risk_types_for_family("vru_risk")
+            if global_vru_options:
+                options = global_vru_options
+                family = "vru_risk"
     best = None
     best_score = -1
     for item in options:

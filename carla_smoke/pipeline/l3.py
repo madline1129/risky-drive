@@ -114,6 +114,60 @@ def event_by_l2_id(events):
     return mapping
 
 
+def text_mentions_vru(*items):
+    text = " ".join(str(item or "") for item in items)
+    return any(token in text for token in ("行人", "pedestrian", "walker", "骑行", "自行车", "cyclist", "vru"))
+
+
+def chain_mentions_vru(chain, event):
+    action_text = " ".join(
+        " ".join(str(item.get(key, "")) for key in ("actor_role", "description"))
+        for item in (chain.get("action_primitives") or [])
+        if isinstance(item, dict)
+    )
+    participant_text = " ".join(
+        str(item.get("actor_role", ""))
+        for item in (chain.get("chain_participants") or [])
+        if isinstance(item, dict)
+    )
+    return text_mentions_vru(
+        chain.get("chain_description"),
+        chain.get("direct_physical_outcome"),
+        chain.get("parent_l2_trigger"),
+        action_text,
+        participant_text,
+        (event or {}).get("trigger_name"),
+        (event or {}).get("immediate_effect"),
+    )
+
+
+def force_vru_risk_if_needed(chain, event):
+    if not chain_mentions_vru(chain, event):
+        return
+    risk_type = risk_type_by_id(chain.get("risk_type_id") or (event or {}).get("risk_type_id")) or {}
+    if any(kind in risk_type.get("actor_kinds", []) for kind in ("pedestrian", "walker", "cyclist")):
+        return
+    chain["risk_family"] = "vru_risk"
+    text = " ".join(
+        str(value or "")
+        for value in (
+            chain.get("chain_description"),
+            chain.get("direct_physical_outcome"),
+            (event or {}).get("trigger_name"),
+            (event or {}).get("immediate_effect"),
+        )
+    )
+    if any(token in text for token in ("遮挡", "盲区", "突然出现")):
+        chain["risk_type_id"] = "vru_emerge_from_occlusion"
+        chain["primary_trigger_action_id"] = "vru_emerge_from_occlusion_into_path"
+    elif any(token in text for token in ("纵向", "向前", "沿")):
+        chain["risk_type_id"] = "vru_longitudinal_intrusion"
+        chain["primary_trigger_action_id"] = "vru_move_longitudinal_in_path"
+    else:
+        chain["risk_type_id"] = "vru_lateral_crossing"
+        chain["primary_trigger_action_id"] = "vru_cross_lateral_into_path"
+
+
 def inherit_event_context(chain, event, l0_data=None):
     if not isinstance(chain, dict):
         return chain
@@ -126,6 +180,7 @@ def inherit_event_context(chain, event, l0_data=None):
         risk_type = risk_type_by_id(chain.get("risk_type_id") or event.get("risk_type_id")) or {}
         if risk_type.get("primary_action_primitive_id"):
             chain["primary_trigger_action_id"] = risk_type["primary_action_primitive_id"]
+    force_vru_risk_if_needed(chain, event)
     if "chain_participants" not in chain:
         chain["chain_participants"] = default_chain_participants(chain)
     if "participant_actions" not in chain:
@@ -354,6 +409,8 @@ def build_action_primitives(chain):
         action_id = item.get("action_primitive_id") or item.get("action_id") or item.get("id")
         if not action_id:
             continue
+        if item.get("role") == "primary" and primary_action and action_id != primary_action:
+            continue
         append_primitive_once(
             primitives,
             {
@@ -479,6 +536,22 @@ def sanitize_action_primitives(primitives):
         )
     return cleaned
 
+
+def sanitize_primary_action_roles(chain):
+    primary_action = chain.get("primary_trigger_action_id")
+    primary_role = actor_role_for_primary_action(primary_action)
+    for participant in chain.get("chain_participants") or []:
+        if not isinstance(participant, dict):
+            continue
+        if participant_is_primary(participant):
+            participant["actor_role"] = primary_role
+    for primitive in chain.get("action_primitives") or []:
+        if not isinstance(primitive, dict):
+            continue
+        if primitive.get("action_primitive_id") == primary_action and primitive.get("role") == "primary":
+            primitive["actor_role"] = primary_role
+
+
 def normalize_output(parsed, l2_data, source_l2_file, l0_data=None):
     chains = parsed.get("initial_accident_chains", []) if isinstance(parsed, dict) else []
     normalized = []
@@ -492,6 +565,7 @@ def normalize_output(parsed, l2_data, source_l2_file, l0_data=None):
             chain.setdefault("id", f"L3-{idx}")
             chain.pop("carla" + "_plan", None)
             inherit_event_context(chain, events_by_id.get(chain.get("parent_l2_id")) or events_by_id.get(idx), l0_data)
+            sanitize_primary_action_roles(chain)
             normalized.append(strip_l3_chain(chain))
 
     if not normalized:
