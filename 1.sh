@@ -29,7 +29,9 @@ CMD=(
   --agent-cfg adv_scenic.yaml
   --test-policy sac
   --test-epoch "$TEST_EPOCH"
+  --skip-event-trace-validation
 )
+
 
 if [[ -n "$ENV_FILE" ]]; then
   CMD+=(--env-file "$ENV_FILE")

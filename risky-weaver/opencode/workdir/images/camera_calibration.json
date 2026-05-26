@@ -1,0 +1,89 @@
+{
+  "camera_model": "carla_surround_rgb",
+  "layout": "2x3",
+  "tile_order": [
+    "CAM_FRONT",
+    "CAM_FRONT_LEFT",
+    "CAM_FRONT_RIGHT",
+    "CAM_BACK",
+    "CAM_BACK_LEFT",
+    "CAM_BACK_RIGHT"
+  ],
+  "image_width": 800,
+  "image_height": 450,
+  "fov": 90.0,
+  "cameras": {
+    "CAM_FRONT": {
+      "location": {
+        "x": 1.5,
+        "y": 0.0,
+        "z": 1.6
+      },
+      "rotation": {
+        "pitch": 0.0,
+        "yaw": 0.0,
+        "roll": 0.0
+      }
+    },
+    "CAM_FRONT_LEFT": {
+      "location": {
+        "x": 1.2,
+        "y": -0.4,
+        "z": 1.6
+      },
+      "rotation": {
+        "pitch": 0.0,
+        "yaw": -55.0,
+        "roll": 0.0
+      }
+    },
+    "CAM_FRONT_RIGHT": {
+      "location": {
+        "x": 1.2,
+        "y": 0.4,
+        "z": 1.6
+      },
+      "rotation": {
+        "pitch": 0.0,
+        "yaw": 55.0,
+        "roll": 0.0
+      }
+    },
+    "CAM_BACK": {
+      "location": {
+        "x": -1.5,
+        "y": 0.0,
+        "z": 1.6
+      },
+      "rotation": {
+        "pitch": 0.0,
+        "yaw": 180.0,
+        "roll": 0.0
+      }
+    },
+    "CAM_BACK_LEFT": {
+      "location": {
+        "x": -1.2,
+        "y": -0.4,
+        "z": 1.6
+      },
+      "rotation": {
+        "pitch": 0.0,
+        "yaw": -125.0,
+        "roll": 0.0
+      }
+    },
+    "CAM_BACK_RIGHT": {
+      "location": {
+        "x": -1.2,
+        "y": 0.4,
+        "z": 1.6
+      },
+      "rotation": {
+        "pitch": 0.0,
+        "yaw": 125.0,
+        "roll": 0.0
+      }
+    }
+  }
+}

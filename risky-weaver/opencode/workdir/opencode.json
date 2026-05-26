@@ -6,7 +6,7 @@
       "name": "DeepSeek",
       "options": {
         "baseURL": "https://api.deepseek.com/v1",
-        "apiKey": "{env:DEEPSEEK_API_KEY}"
+        "apiKey":"sk-6e74732ac48b4adcbb18e82418284265"
       },
       "models": {
         "deepseek-chat": {

@@ -1,0 +1,111 @@
+{
+  "level": "L0",
+  "name": "场景根节点",
+  "description": "当前时刻的场景结构化快照",
+  "source": {
+    "sensor": "carla_api",
+    "image_file": "rgb_0035.png",
+    "frame": 35,
+    "map": "Carla/Maps/Town05",
+    "scenario_source": "safebench_scenic",
+    "safebench_scenic_file": "risky-weaver/opencode/workdir/generated_scene.scenic",
+    "safebench_scenario_index": null,
+    "scenario_description": "RiskyWeaver generated Scenic scenario. Generated from low-level action primitives. Experiment 1: test whether side_vehicle behavior is executed using throttle control.",
+    "camera_mode": "surround",
+    "camera_images": {
+      "CAM_FRONT": "CAM_FRONT/rgb_0035.png",
+      "CAM_FRONT_LEFT": "CAM_FRONT_LEFT/rgb_0035.png",
+      "CAM_FRONT_RIGHT": "CAM_FRONT_RIGHT/rgb_0035.png",
+      "CAM_BACK": "CAM_BACK/rgb_0035.png",
+      "CAM_BACK_LEFT": "CAM_BACK_LEFT/rgb_0035.png",
+      "CAM_BACK_RIGHT": "CAM_BACK_RIGHT/rgb_0035.png"
+    },
+    "montage_layout": "2x3"
+  },
+  "ego": {
+    "id": 748,
+    "type_id": "vehicle.lincoln.mkz_2017",
+    "speed_mps": 7.125,
+    "speed_kmh": 25.65,
+    "location": {
+      "x": -183.937,
+      "y": 100.428,
+      "z": 0.088
+    },
+    "rotation": {
+      "pitch": 0.146,
+      "yaw": -78.329,
+      "roll": -0.347
+    },
+    "road": {
+      "road_id": 623,
+      "section_id": 0,
+      "lane_id": -1,
+      "lane_type": "Driving",
+      "is_junction": true,
+      "junction_id": 562
+    },
+    "traffic_light_state": "Green"
+  },
+  "road": {
+    "map": "Carla/Maps/Town05",
+    "ego_waypoint": {
+      "road_id": 623,
+      "section_id": 0,
+      "lane_id": -1,
+      "lane_type": "Driving",
+      "is_junction": true,
+      "junction_id": 562
+    },
+    "lane_space": "unknown"
+  },
+  "weather": {
+    "cloudiness": 5.0,
+    "precipitation": 0.0,
+    "precipitation_deposits": 0.0,
+    "wind_intensity": 10.0,
+    "fog_density": 2.0,
+    "wetness": 0.0,
+    "sun_altitude_angle": 45.0
+  },
+  "actors": [
+    {
+      "id": 749,
+      "type_id": "vehicle.tesla.model3",
+      "kind": "vehicle",
+      "role_name": "autopilot",
+      "distance_m": 4.677,
+      "relative_position": "front-left",
+      "relative_longitudinal_m": 1.276,
+      "relative_lateral_m": -4.5,
+      "speed_mps": 0.0,
+      "speed_kmh": 0.0,
+      "location": {
+        "x": -188.086,
+        "y": 98.268,
+        "z": 0.056
+      },
+      "rotation": {
+        "pitch": -0.053,
+        "yaw": -90.621,
+        "roll": 0.006
+      },
+      "road": {
+        "road_id": 693,
+        "section_id": 0,
+        "lane_id": -1,
+        "lane_type": "Driving",
+        "is_junction": true,
+        "junction_id": 562
+      },
+      "same_lane_as_ego": false
+    }
+  ],
+  "nearest_front_actor": null,
+  "summary": {
+    "nearby_actor_count": 1,
+    "front_actor_count": 0,
+    "nearest_actor_distance_m": 4.677,
+    "nearest_front_distance_m": null
+  }
+}

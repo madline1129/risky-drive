@@ -1,0 +1,192 @@
+You are generating one Scenic scenario from low-level action primitives.
+
+Inputs:
+- Read task JSON: ./risky-weaver/opencode/workdir/opencode_task.json
+- Edit exactly this file in place: ./risky-weaver/opencode/workdir/generated_scene.scenic
+
+Goal:
+- Convert task.low_level_objects into executable Scenic code.
+- Each object has exactly three authoritative parts:
+  1. spawn: where the object starts.
+  2. motion.start_frame or motion.start_time_s: when it starts moving. If omitted, treat it as 0.
+  3. motion: how it moves, especially speed magnitude and direction.
+- Keep all object declarations from the seed file when possible. Add behavior bindings to those declarations when needed.
+- Do not invent semantic actions such as "cut_in", "jaywalking", "occlusion", or "sudden braking" unless they are directly implied by the object's low-level motion vector.
+- Make motion physically direct: if motion.frame is ego_local or ego_initial_local, convert longitudinal/lateral components using the ego initial heading; if motion.frame is actor_local or actor_initial_local, use the actor initial heading; if motion.frame is world, use the given world vector directly.
+
+Scene context contract:
+- task.scene_context.timestep is the simulation step duration in seconds.
+- task.scene_context.total_step is the total number of simulation steps.
+- Compute:
+  TOTAL_DURATION = task.scene_context.timestep * task.scene_context.total_step
+- If total_step is missing, use a reasonable default such as 100.
+- If a motion has no duration, no duration_frames, and no until condition, execute it from trigger_time_s until TOTAL_DURATION.
+- After TOTAL_DURATION, stop direct velocity actors by repeatedly taking SetVelocityAction(0, 0, 0).
+
+Trigger time rules:
+- If motion.start_time_s exists, use it directly as trigger_time_s.
+- Else if motion.start_frame exists, compute:
+  trigger_time_s = motion.start_frame * task.scene_context.timestep
+- Else trigger_time_s = 0.
+- Never use current_frame, frame_id, or time_step inside Scenic.
+- In Scenic, time must be checked only with:
+  simulation().currentTime
+
+Low-level motion contract:
+- motion.mode may be velocity, follow_lane, brake, reverse, walk, static, traffic_manager, or weather.
+- motion.speed_mps is scalar speed for follow_lane/traffic_manager-style motion.
+- For direct velocity control, use motion.velocity_mps.
+- motion.velocity_mps.longitudinal and motion.velocity_mps.lateral are signed components in motion.frame.
+- In ego_local, ego_initial_local, actor_local, or actor_initial_local:
+  longitudinal > 0 means forward.
+  longitudinal < 0 means backward.
+  lateral > 0 means right.
+  lateral < 0 means left.
+- In world frame, use motion.velocity_mps.x and motion.velocity_mps.y directly.
+- motion.heading controls vehicle heading, e.g. keep_initial or yaw_rate.
+- If motion.heading.mode == keep_initial, keep the actor's initial heading unchanged. Do not rotate the actor to align with velocity.
+- For vehicle velocity control, prefer repeated:
+  take SetVelocityAction(xVel, yVel, 0)
+  after trigger_time_s.
+- For hard brake, use repeated:
+  take SetThrottleAction(0)
+  take SetBrakeAction(1)
+- For reverse, use repeated:
+  take SetReverseAction(True)
+  take SetThrottleAction(...)
+  take SetBrakeAction(0)
+- For pedestrian motion, use SetWalkingDirectionAction and SetWalkingSpeedAction/SetWalkAction.
+- For static objects, do not attach behavior.
+
+Velocity conversion rules:
+- If motion.frame == "ego_local", treat it as "ego_initial_local".
+- If motion.frame == "actor_local", treat it as "actor_initial_local".
+- If motion.frame == "ego_initial_local", use the ego object's initial CARLA yaw from task.low_level_objects.
+- If motion.frame == "actor_initial_local", use the current actor's initial CARLA yaw.
+- If motion.velocity_semantics == "absolute_world_velocity_expressed_in_ego_initial_frame", convert the local velocity vector once using the ego initial CARLA yaw. Do not treat it as relative velocity to ego.
+- yaw is in degrees. Convert yaw to radians before sin/cos.
+- Use this local-to-world velocity convention:
+  forward_x = cos(yaw_rad)
+  forward_y = sin(yaw_rad)
+  right_x = sin(yaw_rad)
+  right_y = -cos(yaw_rad)
+  xVel = longitudinal * forward_x + lateral * right_x
+  yVel = longitudinal * forward_y + lateral * right_y
+- Do not infer a different motion pattern from risk labels. The velocity vector is authoritative.
+
+Object declaration rules:
+- Generate Scenic object declarations using the seed-style Scenic syntax.
+- Never use 3D tuple declarations such as:
+  Car at (x, y, z)
+- Never use:
+  facing raw_yaw deg
+- Never use:
+  Point(x, y, z)
+  carla.Location(...)
+  carla.Transform(...)
+- Use this object declaration style:
+  actor_name = Constructor at (scenic_x @ scenic_y),
+      with heading scenic_heading deg,
+      with regionContainedIn None,
+      with blueprint "type_id",
+      with behavior BehaviorName()
+- If no behavior is needed, omit the behavior line.
+- Always preserve the blueprint from object.type_id:
+  with blueprint "vehicle.xxx"
+  with blueprint "walker.xxx"
+  with blueprint "static.prop.xxx"
+- Always preserve object names from task.low_level_objects as Scenic variable names, after sanitizing invalid characters if necessary.
+
+CARLA-to-Scenic spawn conversion:
+- task.low_level_objects[].spawn.carla_location is in CARLA coordinates.
+- Convert CARLA location to Scenic position as:
+  scenic_x = carla_location.x
+  scenic_y = -carla_location.y
+- Ignore carla_location.z in Scenic object declarations unless the existing seed file already uses a supported z syntax.
+- Therefore, do not write:
+  Car at (x, y, z)
+- Instead write:
+  Car at (x @ -y)
+
+CARLA-to-Scenic heading conversion:
+- task.low_level_objects[].spawn.carla_rotation.yaw is CARLA yaw in degrees.
+- Do not use raw CARLA yaw directly as Scenic heading.
+- Convert CARLA yaw to Scenic heading as:
+  scenic_heading = normalize_degrees(-(carla_yaw + 90.0))
+- normalize_degrees means keep the result in (-180, 180].
+- Example:
+  carla_yaw = -90.621
+  scenic_heading = 0.621 deg
+- Use:
+  with heading 0.621 deg
+- Do not use:
+  facing -90.621 deg
+
+Constructor rules:
+- If type_id starts with vehicle.*, use Car.
+- If type_id starts with walker.*, use Pedestrian.
+- If type_id starts with static.prop.*, use Prop.
+- For vehicle.bh.crossbike, still use Car because it starts with vehicle.*.
+
+Behavior definition rules:
+- Define every behavior before the first object declaration that references it.
+- Bind behavior only in object declarations using:
+  with behavior BehaviorName()
+- Never write:
+  require actor do Behavior()
+- Use do only for behaviors.
+- Use take only for actions.
+- wait must have no argument.
+- Use:
+  wait
+- Never use:
+  wait 0.05
+  wait(...)
+
+Behavior loop rules:
+- For a triggered velocity actor:
+  1. wait until simulation().currentTime reaches trigger_time_s.
+  2. repeatedly take SetVelocityAction(xVel, yVel, 0) until TOTAL_DURATION.
+  3. after TOTAL_DURATION, repeatedly take SetVelocityAction(0, 0, 0).
+- The behavior should look structurally like:
+  behavior SomeVelocityBehavior():
+      while simulation().currentTime < trigger_time_s:
+          wait
+      while simulation().currentTime < TOTAL_DURATION:
+          take SetVelocityAction(xVel, yVel, 0)
+          wait
+      while True:
+          take SetVelocityAction(0, 0, 0)
+          wait
+
+Traffic manager motion contract:
+- For motion.mode == "traffic_manager", use a simple behavior that keeps the ego moving.
+- Prefer:
+  do AutopilotBehavior()
+  if this environment supports it.
+- If using direct actions, repeatedly take:
+  SetAutopilotAction(True)
+  SetSpeedAction(speed_mps)
+- Do not invent a route.
+- Do not replace traffic_manager motion with unrelated lane changes or braking.
+
+Scenic API whitelist:
+- Time is exactly simulation().currentTime. Do not use current_time, current_frame, frame_id, or time_step.
+- wait has no argument. Use wait, never wait 0.05 or wait(...).
+- Use do only for behaviors. Use take only for actions.
+- Vehicle actions: SetThrottleAction, SetBrakeAction, SetSteerAction, SetReverseAction, SetHandBrakeAction, SetAutopilotAction, SetTrafficLightAction, SetSpeedAction, SetVelocityAction, OffsetAction.
+- Walker actions: SetWalkingDirectionAction, SetWalkingSpeedAction, SetWalkAction.
+- Built-in behaviors may be used with do: FollowLaneBehavior, LaneChangeBehavior, AutopilotBehavior, WalkForwardBehavior, CrossingBehavior.
+- Bind behavior only in object declarations with with behavior BehaviorName(...).
+- Never write require actor do Behavior().
+- Constructor rule: vehicle.* -> Car, walker.* -> Pedestrian, static.prop.* -> Prop.
+- Never use Point(x, y, z), carla.Location, or carla.Transform in Scenic object declarations.
+- Weather change must use simulation().world.get_weather(), assign fields, then simulation().world.set_weather(weather).
+- Define every behavior/monitor before the first object that references it.
+
+Output contract:
+- Edit only generated_scene.scenic.
+- Do not edit opencode_task.json.
+- Do not create extra files.
+- Do not write Markdown.
+- Do not ask questions.

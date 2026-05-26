@@ -1,0 +1,21 @@
+{
+  "scenario_source": "safebench_scenic",
+  "scenic_file": "risky-weaver/opencode/workdir/generated_scene.scenic",
+  "scenario_index": null,
+  "description": "RiskyWeaver generated Scenic scenario. Generated from low-level action primitives. Experiment 1: test whether side_vehicle behavior is executed using throttle control.",
+  "frames": 180,
+  "save_every": 5,
+  "saved_images": 36,
+  "capture_mode": "sampled_sequence",
+  "selected_frame": null,
+  "camera_mode": "surround",
+  "camera_layout": "2x3_surround",
+  "params": {
+    "address": "127.0.0.1",
+    "port": 2001,
+    "timeout": 300.0,
+    "render": 0,
+    "timestep": 0.05,
+    "weather": "ClearNoon"
+  }
+}

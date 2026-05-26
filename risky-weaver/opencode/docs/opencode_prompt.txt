@@ -1,8 +1,8 @@
 You are generating one Scenic scenario from low-level action primitives.
 
 Inputs:
-- Read task JSON: /Users/madlineceleste/Desktop/code/ChatScene-main/risky-weaver/opencode_workdir/opencode_task.json
-- Edit exactly this file in place: /Users/madlineceleste/Desktop/code/ChatScene-main/risky-weaver/opencode_workdir/generated_scene.scenic
+- Read task JSON: ./risky-weaver/opencode_workdir/opencode_task.json
+- Edit exactly this file in place: .risky-weaver/opencode_workdir/generated_scene.scenic
 
 Goal:
 - Convert task.low_level_objects into executable Scenic code.
