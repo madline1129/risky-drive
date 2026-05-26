@@ -9,6 +9,12 @@ HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-2001}"
 SCENIC_FILE="${SCENIC_FILE:-$REPO_ROOT/risky-weaver/opencode/workdir/generated_scene.scenic}"
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/risky-weaver/run/images}"
+MONTAGE="${MONTAGE:-1}"
+
+EXTRA_ARGS=()
+if [[ "$MONTAGE" == "1" || "$MONTAGE" == "true" || "$MONTAGE" == "yes" ]]; then
+  EXTRA_ARGS+=(--montage)
+fi
 
 "$PYTHON_BIN" "$REPO_ROOT/risky-weaver/run/scenic_to_carla_images.py" \
   --carla-root "$CARLA_ROOT" \
@@ -22,4 +28,5 @@ OUTPUT_DIR="${OUTPUT_DIR:-$REPO_ROOT/risky-weaver/run/images}"
   --timestep "${TIMESTEP:-0.05}" \
   --weather "${WEATHER:-ClearNoon}" \
   --camera-mode "${CAMERA_MODE:-surround}" \
-  --clean-output
+  --clean-output \
+  "${EXTRA_ARGS[@]}"
