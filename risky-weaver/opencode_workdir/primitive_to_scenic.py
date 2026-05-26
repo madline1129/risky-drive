@@ -226,8 +226,10 @@ def low_level_objects(data: dict[str, Any]) -> list[dict[str, Any]]:
         "mode": action.get("id") or "velocity",
         "frame": action.get("motion_frame") or safe_get(action, "direction", "frame") or "ego_local",
         "speed_mps": action.get("speed_mps"),
-        "lateral_speed_mps": action.get("lateral_speed_mps"),
-        "longitudinal_speed_mps": action.get("longitudinal_speed_mps"),
+        "velocity_mps": {
+            "longitudinal": action.get("longitudinal_speed_mps", 0.0),
+            "lateral": action.get("lateral_speed_mps", 0.0),
+        },
         "target_relative_lateral_m": action.get("target_relative_lateral_m"),
         "direction": action.get("direction"),
         "raw_action": action,
@@ -274,6 +276,26 @@ def normalize_motion_times(objects: list[dict[str, Any]], timestep: float) -> No
             motion["start_frame"] = int(round(start_time / timestep)) if timestep > 0 else 0
 
 
+def normalize_motion_velocity(objects: list[dict[str, Any]]) -> None:
+    for obj in objects:
+        motion = obj.get("motion") if isinstance(obj, dict) else None
+        if not isinstance(motion, dict):
+            continue
+        velocity = motion.get("velocity_mps")
+        if not isinstance(velocity, dict):
+            velocity = {}
+        if "longitudinal" not in velocity and motion.get("longitudinal_speed_mps") is not None:
+            velocity["longitudinal"] = motion.get("longitudinal_speed_mps")
+        if "lateral" not in velocity and motion.get("lateral_speed_mps") is not None:
+            velocity["lateral"] = motion.get("lateral_speed_mps")
+        if "x" not in velocity and motion.get("x_mps") is not None:
+            velocity["x"] = motion.get("x_mps")
+        if "y" not in velocity and motion.get("y_mps") is not None:
+            velocity["y"] = motion.get("y_mps")
+        if velocity:
+            motion["velocity_mps"] = velocity
+
+
 def build_task(data: dict[str, Any]) -> dict[str, Any]:
     action = action_primitive(data)
     objects = low_level_objects(data)
@@ -281,6 +303,7 @@ def build_task(data: dict[str, Any]) -> dict[str, Any]:
     timestep = as_float(context.get("timestep"), as_float(safe_get(data, "scene", "timestep"), 0.05)) or 0.05
     context["timestep"] = timestep
     normalize_motion_times(objects, timestep)
+    normalize_motion_velocity(objects)
     trigger_frame = data.get("trigger_frame") or action.get("trigger_frame") or first_motion_frame(objects, 0)
     return {
         "level": "RiskyWeaverPrimitiveToScenicTask",
@@ -397,9 +420,13 @@ Goal:
 Low-level motion contract:
 - motion.mode may be velocity, follow_lane, brake, reverse, walk, static, traffic_manager, or weather.
 - motion.start_frame is an integer frame. Default is 0. If only start_time_s is provided, task preparation converts it using scene_context.timestep.
-- motion.speed_mps is scalar speed.
-- motion.longitudinal_speed_mps and motion.lateral_speed_mps are signed components in motion.frame.
-- motion.direction may provide heading_deg, longitudinal_m, lateral_m, x_mps, y_mps, lateral_direction, or target_relative_lateral_m.
+- motion.speed_mps is scalar speed for follow_lane/traffic_manager-style motion.
+- For direct velocity control, use motion.velocity_mps.
+- motion.velocity_mps.longitudinal and motion.velocity_mps.lateral are signed components in motion.frame.
+- In ego_local/actor_local: longitudinal > 0 means forward, longitudinal < 0 means backward; lateral > 0 means right, lateral < 0 means left.
+- In world frame, use motion.velocity_mps.x and motion.velocity_mps.y directly.
+- motion.heading controls vehicle heading, e.g. keep_initial or yaw_rate.
+- motion.until controls stop conditions, e.g. relative_lateral_m.
 - For vehicle velocity control, prefer repeated take SetVelocityAction(xVel, yVel, 0) after start_frame.
 - For hard brake, use repeated take SetThrottleAction(0), SetBrakeAction(1).
 - For reverse, use repeated take SetReverseAction(True), SetThrottleAction(...), SetBrakeAction(0).

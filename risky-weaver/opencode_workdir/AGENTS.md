@@ -8,7 +8,7 @@ The business input is bottom-level:
 
 - `objects[].spawn` defines initial placement.
 - `objects[].motion.start_frame` or `objects[].motion.start_time_s` defines the trigger time, defaulting to `0`.
-- `objects[].motion` defines speed magnitude and direction.
+- `objects[].motion.velocity_mps.longitudinal` and `objects[].motion.velocity_mps.lateral` define the bottom-level velocity components.
 - Risk labels are only hints; do not replace object-level motion with a different semantic scenario.
 
 Rules:

@@ -53,11 +53,15 @@
         "start_time_s": 1.0,
         "mode": "velocity",
         "frame": "ego_local",
-        "longitudinal_speed_mps": 0.0,
-        "lateral_speed_mps": 2.0,
-        "direction": {
-          "lateral_direction": "toward_ego_lane",
-          "target_relative_lateral_m": -0.5
+        "velocity_mps": {
+          "longitudinal": 0.0,
+          "lateral": 2.0
+        },
+        "heading": {
+          "mode": "keep_initial"
+        },
+        "until": {
+          "relative_lateral_m": -0.5
         }
       }
     }

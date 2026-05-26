@@ -6,7 +6,24 @@ The input primitive is intentionally bottom-level. Each object only needs:
 
 - `spawn`: where it starts.
 - `motion.start_frame` or `motion.start_time_s`: when it starts moving, defaulting to `0`.
-- `motion`: how it moves, mainly speed magnitude and direction.
+- `motion`: how it moves, mainly `velocity_mps.longitudinal` and `velocity_mps.lateral`.
+
+Example:
+
+```json
+"motion": {
+  "start_time_s": 1.0,
+  "mode": "velocity",
+  "frame": "ego_local",
+  "velocity_mps": {
+    "longitudinal": 0.0,
+    "lateral": 2.0
+  },
+  "heading": {
+    "mode": "keep_initial"
+  }
+}
+```
 
 Run from repository root:
 

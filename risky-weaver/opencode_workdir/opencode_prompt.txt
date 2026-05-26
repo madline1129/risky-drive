@@ -17,9 +17,13 @@ Goal:
 Low-level motion contract:
 - motion.mode may be velocity, follow_lane, brake, reverse, walk, static, traffic_manager, or weather.
 - motion.start_frame is an integer frame. Default is 0. If only start_time_s is provided, task preparation converts it using scene_context.timestep.
-- motion.speed_mps is scalar speed.
-- motion.longitudinal_speed_mps and motion.lateral_speed_mps are signed components in motion.frame.
-- motion.direction may provide heading_deg, longitudinal_m, lateral_m, x_mps, y_mps, lateral_direction, or target_relative_lateral_m.
+- motion.speed_mps is scalar speed for follow_lane/traffic_manager-style motion.
+- For direct velocity control, use motion.velocity_mps.
+- motion.velocity_mps.longitudinal and motion.velocity_mps.lateral are signed components in motion.frame.
+- In ego_local/actor_local: longitudinal > 0 means forward, longitudinal < 0 means backward; lateral > 0 means right, lateral < 0 means left.
+- In world frame, use motion.velocity_mps.x and motion.velocity_mps.y directly.
+- motion.heading controls vehicle heading, e.g. keep_initial or yaw_rate.
+- motion.until controls stop conditions, e.g. relative_lateral_m.
 - For vehicle velocity control, prefer repeated take SetVelocityAction(xVel, yVel, 0) after start_frame.
 - For hard brake, use repeated take SetThrottleAction(0), SetBrakeAction(1).
 - For reverse, use repeated take SetReverseAction(True), SetThrottleAction(...), SetBrakeAction(0).
